@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Chatbot</title>
+</head>
+<body>
+<h1>Chatbot</h1>
+<p>
+  <button id="new">New session</button>
+  Sessions: <span id="sessions"></span>
+</p>
+<p>Current session: <code id="current">none</code></p>
+<div id="log" aria-live="polite"></div>
+<form id="form">
+  <label for="text">Message</label><br>
+  <textarea id="text" rows="3" cols="80" required></textarea><br>
+  <button type="submit">Send</button> <span id="status"></span>
+</form>
+<script>
+const token = new URLSearchParams(location.search).get("token") || "";
+const headers = token ? { "X-Web-Token": token } : {};
+const threads = {};   // thread_id -> { messages: [{role, content}], pending: n }
+let current = null;
+
+const $ = (id) => document.getElementById(id);
+
+async function api(path, opts = {}) {
+  const res = await fetch(path, { ...opts, headers: { ...headers, ...(opts.headers || {}) } });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.error || res.statusText);
+  return body;
+}
+
+function renderSessions() {
+  const box = $("sessions");
+  box.replaceChildren();
+  for (const id of Object.keys(threads)) {
+    const b = document.createElement("button");
+    b.textContent = (id === current ? "> " : "") + id.slice(0, 8) + (threads[id].pending ? " (...)" : "");
+    b.onclick = () => switchTo(id);
+    box.append(b, " ");
+  }
+}
+
+function render() {
+  $("current").textContent = current || "none";
+  const log = $("log");
+  log.replaceChildren();
+  if (current) {
+    for (const m of threads[current].messages) {
+      const p = document.createElement("p");
+      const who = document.createElement("b");
+      who.textContent = m.role + ": ";
+      p.append(who, m.content);        // textContent only, never innerHTML
+      log.append(p);
+    }
+    $("status").textContent = threads[current].pending ? "waiting for reply..." : "";
+  }
+  renderSessions();
+}
+
+async function switchTo(id) {
+  current = id;
+  if (!threads[id].loaded) {
+    try {
+      const h = await api("/history?thread_id=" + encodeURIComponent(id));
+      threads[id].messages = h.messages.map(({ role, content }) => ({ role, content }));
+      threads[id].loaded = true;
+    } catch (e) { $("status").textContent = "error: " + e.message; }
+  }
+  render();
+}
+
+function newSession() {
+  const id = crypto.randomUUID();
+  threads[id] = { messages: [], pending: 0, loaded: true };
+  switchTo(id);
+}
+
+$("new").onclick = newSession;
+
+$("form").onsubmit = async (ev) => {
+  ev.preventDefault();
+  const text = $("text").value.trim();
+  if (!text) return;
+  if (!current) newSession();
+  const id = current;   // reply lands in this session even if the user switches away
+  const t = threads[id];
+  $("text").value = "";
+  t.messages.push({ role: "user", content: text });
+  t.pending++;
+  render();
+  try {
+    const r = await api("/send", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ thread_id: id, text }),
+    });
+    t.messages.push({ role: "assistant", content: r.reply });
+  } catch (e) {
+    t.messages.push({ role: "error", content: e.message });
+  }
+  t.pending--;
+  render();
+};
+
+(async () => {
+  try {
+    const { threads: list } = await api("/threads");
+    for (const t of list) threads[t.thread_id] = { messages: [], pending: 0, loaded: false };
+    if (list.length) await switchTo(list[0].thread_id);
+  } catch (e) { $("status").textContent = "error: " + e.message; }
+  render();
+})();
+</script>
+</body>
+</html>
