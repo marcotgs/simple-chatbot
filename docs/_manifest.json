@@ -1,0 +1,23 @@
+{
+  "Q3-plan": {
+    "path": "docs/Q3-plan.md",
+    "approx_tokens": 29122,
+    "facts": {
+      "launch_date": "2026-09-17"
+    }
+  },
+  "engineering-handbook": {
+    "path": "docs/engineering-handbook.md",
+    "approx_tokens": 28594,
+    "facts": {
+      "sev1_ack_minutes": "15"
+    }
+  },
+  "customer-research": {
+    "path": "docs/customer-research.md",
+    "approx_tokens": 29245,
+    "facts": {
+      "top_request": "bulk export of invoices"
+    }
+  }
+}
