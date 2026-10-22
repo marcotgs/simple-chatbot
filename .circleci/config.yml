@@ -1,0 +1,93 @@
+version: 2.1
+
+# test on every branch; build (Dockerfile check) on non-main branches;
+# main: test -> hold (manual approval) -> deploy. Fly builds the image remotely
+# on deploy, so main is never built twice.
+
+executors:
+  python:
+    docker:
+      - image: cimg/python:3.12.15
+  base:
+    docker:
+      - image: cimg/base:2026.10
+
+jobs:
+  test:
+    executor: python
+    steps:
+      - checkout
+      - restore_cache:
+          keys:
+            - pip-v1-{{ checksum "pyproject.toml" }}
+      - run:
+          name: Install dependencies from pyproject.toml
+          command: |
+            python -c "import tomllib; print('\n'.join(tomllib.load(open('pyproject.toml','rb'))['project']['dependencies']))" > /tmp/requirements.txt
+            pip install -r /tmp/requirements.txt
+      - save_cache:
+          key: pip-v1-{{ checksum "pyproject.toml" }}
+          paths:
+            - ~/.cache/pip
+      - run:
+          name: Unit tests
+          # Tests must not need real keys; nothing secret is available in this job.
+          command: python -m unittest discover tests -v
+
+  build:
+    executor: base
+    steps:
+      - checkout
+      - setup_remote_docker
+      - run:
+          name: Build image (validation only, not pushed)
+          command: docker build --pull -t simple-chatbot:ci .
+
+  deploy:
+    executor: base
+    environment:
+      FLYCTL_VERSION: "0.4.120"
+      FLYCTL_SHA256: "ef9b938ff3af2b28fad961a676e5ac2295124ad0b892ffb1c5f16a03bd4ee378"
+    steps:
+      - checkout
+      - run:
+          name: Install flyctl (pinned release, sha256 verified)
+          command: |
+            set -euo pipefail
+            tarball="flyctl_${FLYCTL_VERSION}_Linux_x86_64.tar.gz"
+            curl -fsSL -o "/tmp/${tarball}" \
+              "https://github.com/superfly/flyctl/releases/download/v${FLYCTL_VERSION}/${tarball}"
+            echo "${FLYCTL_SHA256}  /tmp/${tarball}" | sha256sum -c -
+            mkdir -p "$HOME/bin"
+            tar -xzf "/tmp/${tarball}" -C "$HOME/bin" flyctl
+            "$HOME/bin/flyctl" version
+      - run:
+          name: Deploy to Fly.io (remote build)
+          # FLY_API_TOKEN comes from the restricted context "fly-deploy" and is read by
+          # flyctl from the environment; it is never passed on the command line or echoed.
+          command: |
+            set -euo pipefail
+            : "${FLY_API_TOKEN:?FLY_API_TOKEN missing: attach context fly-deploy}"
+            "$HOME/bin/flyctl" deploy --remote-only --ha=false
+
+workflows:
+  test-build-deploy:
+    jobs:
+      - test
+      - build:
+          requires: [test]
+          filters:
+            branches:
+              ignore: main
+      - hold:
+          type: approval
+          requires: [test]
+          filters:
+            branches:
+              only: main
+      - deploy:
+          requires: [hold]
+          context: fly-deploy
+          filters:
+            branches:
+              only: main
