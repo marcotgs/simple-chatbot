@@ -1,0 +1,20 @@
+{
+ "seed": 1337,
+ "n_turns": 500,
+ "address": "742 Evergreen Terrace, Springfield 99999",
+ "address_variants": [
+  "742 Evergreen Terrace",
+  "Evergreen Terrace",
+  "742 Evergreen",
+  "Springfield 99999"
+ ],
+ "partner": "Jordan Ellis",
+ "cat_name": "Mochi",
+ "restaurant": "Trattoria Verde",
+ "turns": {
+  "address": 8,
+  "partner": 12,
+  "cat": 20,
+  "restaurant": 22
+ }
+}
