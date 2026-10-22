@@ -1,0 +1,36 @@
+# Fly.io config. No secrets here: set them with `fly secrets set` (see DEPLOY.md).
+app = "<YOUR_FLY_APP>"
+primary_region = "<YOUR_REGION>"  # e.g. gru, iad, fra — must match the volume's region
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  HOST = "0.0.0.0"
+  PORT = "8080"
+  DB_PATH = "/data/chatbot.db"
+  CALL_LOG_PATH = "/data/logs/calls.jsonl"
+  LLM_MODEL = "openai/gpt-4o-mini"
+  MAX_INPUT_TOKENS = "8000"
+  TARGET_INPUT_TOKENS = "6500"
+  FACT_EXTRACT_BATCH = "20"
+
+# SQLite + one volume => exactly ONE machine. Never scale above 1.
+[mounts]
+  source = "data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  # The Slack Socket Mode connection lives in this process: never stop the machine.
+  auto_stop_machines = "off"
+  auto_start_machines = false
+  min_machines_running = 1
+  # No [[http_service.checks]]: Fly checks need a 2xx, and every path returns 401
+  # without WEB_TOKEN.
+  # TODO(T6): switch to /healthz — add [[http_service.checks]] with path = "/healthz".
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

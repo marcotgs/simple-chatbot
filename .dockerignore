@@ -1,0 +1,27 @@
+# Secrets and local state never enter the image.
+.env
+.env.*
+!.env.example
+data/
+logs/
+*.db
+*.db-wal
+*.db-shm
+
+# VCS, tooling, caches.
+.git/
+.gitignore
+.circleci/
+.claude/
+.venv/
+**/__pycache__/
+**/*.pyc
+*.egg-info/
+.pytest_cache/
+
+# Not needed at runtime. Keep docs/: the app reads it.
+tests/
+scenarios/
+Dockerfile
+.dockerignore
+fly.toml
