@@ -1,11 +1,14 @@
 """Scenario runner: S1-S7 against a fresh temp DB each, deterministic assertions, no LLM judge.
 
-    python -m scenarios.run [--only 1,4] [--keep-db] [--dry]
+    python -m scenarios.run [--only 1,4] [--keep-db] [--dry] [--jobs 4]
 
 Each scenario runs in its own child process with DB_PATH / CALL_LOG_PATH pointing at a temp dir,
 set before chatbot is imported, so the repo's data/ and logs/ are never touched.
 The 500-turn history is loaded ONCE per run into a snapshot dir; S2/S6/S7 (and --dry) start from a
 copy.
+With --jobs N > 1, up to N children run at once: the snapshot and the scenarios that do not need
+it start together, the history scenarios start once the snapshot is ready. Child output is then
+prefixed with [S<id>] so lines from different children stay readable.
 """
 
 import argparse
@@ -15,9 +18,11 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import traceback
 import uuid
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -60,8 +65,12 @@ def new_session() -> str:
     return str(uuid.uuid4())
 
 
+_log_lock = threading.Lock()  # --jobs: whole lines from different children never interleave
+
+
 def log(msg: str) -> None:
-    print(msg, file=sys.stderr, flush=True)
+    with _log_lock:
+        print(msg, file=sys.stderr, flush=True)
 
 
 class Ctx:
@@ -108,8 +117,8 @@ class Ctx:
         for done in range(HISTORY_CHUNK, len(turns) + HISTORY_CHUNK, HISTORY_CHUNK):
             # chunked so a long load logs progress instead of looking stuck
             n += gen_history.load_history(USER, DM, turns=turns[done - HISTORY_CHUNK : done])
-            done = min(done, len(turns))
-            log(f"  loaded {done}/{len(turns)} turns ({time.monotonic() - t0:.0f}s)")
+            secs = time.monotonic() - t0
+            log(f"  loaded {min(done, len(turns))}/{len(turns)} turns ({secs:.0f}s)")
         log(f"  loaded {n} messages into {DM} via core.ingest_turn in {time.monotonic() - t0:.1f}s")
         return n
 
@@ -461,9 +470,11 @@ def child(sid: str) -> int:
     return 0
 
 
-def run_one(sid, keep: bool, snap: Path | None = None, fake: bool = False) -> dict:
+def run_one(
+    sid, keep: bool, snap: Path | None = None, fake: bool = False, tag: bool = False
+) -> dict:
     """snap: a finished snapshot dir copied into this scenario's temp dir (DB, WAL, call log,
-    forget.key)."""
+    forget.key). tag: child output goes through log() prefixed with [S<sid>] (parallel runs)."""
     tmp = Path(tempfile.mkdtemp(prefix=f"scenario-s{sid}-"))
     env = {
         **os.environ,
@@ -479,14 +490,21 @@ def run_one(sid, keep: bool, snap: Path | None = None, fake: bool = False) -> di
             snap, tmp, dirs_exist_ok=True, ignore=shutil.ignore_patterns("transcript.json")
         )
     log(f"--- S{sid} {NAMES[sid]} (db {tmp}{', snapshot copy' if snap else ''})")
-    p = subprocess.run(
-        [sys.executable, "-m", "scenarios.run", "--child", str(sid)],
-        cwd=ROOT,
-        env=env,
-        stdout=subprocess.PIPE,
-        text=True,
-    )
-    lines = [ln for ln in p.stdout.splitlines() if ln.startswith(RESULT_TAG)]
+    cmd = [sys.executable, "-m", "scenarios.run", "--child", str(sid)]
+    if tag:
+        # one merged stream read line by line: progress stays live, no pipe can fill up unread
+        lines = []
+        with subprocess.Popen(
+            cmd, cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
+        ) as p:
+            for ln in p.stdout:
+                if ln.startswith(RESULT_TAG):
+                    lines.append(ln)
+                else:
+                    log(f"[S{sid}] {ln.rstrip()}")
+    else:
+        p = subprocess.run(cmd, cwd=ROOT, env=env, stdout=subprocess.PIPE, text=True)
+        lines = [ln for ln in p.stdout.splitlines() if ln.startswith(RESULT_TAG)]
     res = (
         json.loads(lines[-1][len(RESULT_TAG) :])
         if lines
@@ -521,6 +539,12 @@ def main(argv=None) -> int:
         action="store_true",
         help="no LLM: generate history, load it with a fake model, check plumbing",
     )
+    ap.add_argument(
+        "--jobs",
+        type=int,
+        default=1,
+        help="scenarios run at once (default 1: one after another)",
+    )
     ap.add_argument("--child", help=argparse.SUPPRESS)
     args = ap.parse_args(argv)
     if args.child:
@@ -534,15 +558,17 @@ def main(argv=None) -> int:
     bad = [i for i in ids if i != "dry" and i not in SCENARIOS]
     if bad:
         ap.error(f"unknown scenario(s): {bad}")
+    if args.jobs < 1:
+        ap.error("--jobs must be at least 1")
     results, snap = {}, None
     if HISTORY_SCENARIOS & set(ids):
         ids = ["snapshot", *ids]
-    for sid in ids:
-        r = results[sid] = run_one(
-            sid, args.keep_db, snap if sid in HISTORY_SCENARIOS else None, args.dry
-        )
-        if sid == "snapshot":
-            snap = r["dir"]
+
+    def start(sid):
+        hist = snap if sid in HISTORY_SCENARIOS else None
+        return run_one(sid, args.keep_db, hist, args.dry, tag=args.jobs > 1)
+
+    def report(sid, r):
         status = "FAIL" if r["fails"] else "PASS"
         reason = "; ".join(r["fails"]) or "ok"
         extra = f" | notes: {'; '.join(r['notes'])}" if r["notes"] else ""
@@ -551,6 +577,33 @@ def main(argv=None) -> int:
             f"max_prompt_tokens={r['max_prompt']}]{extra}",
             flush=True,
         )
+
+    if args.jobs == 1:
+        for sid in ids:
+            r = results[sid] = start(sid)
+            if sid == "snapshot":
+                snap = r["dir"]
+            report(sid, r)
+    else:
+        with ThreadPoolExecutor(args.jobs) as pool:
+            # "snapshot" is ids[0], so it is submitted first and never waits for a free worker
+            running = {pool.submit(start, s): s for s in ids if s not in HISTORY_SCENARIOS}
+            try:
+                while running:
+                    done, _ = wait(running, return_when=FIRST_COMPLETED)
+                    for f in done:
+                        sid = running.pop(f)
+                        r = results[sid] = f.result()
+                        if sid == "snapshot":
+                            snap = r["dir"]
+                            running |= {
+                                pool.submit(start, s): s for s in ids if s in HISTORY_SCENARIOS
+                            }
+                        report(sid, r)
+            except BaseException:
+                # Ctrl-C or a crashed child: queued live scenarios must never start
+                pool.shutdown(wait=True, cancel_futures=True)
+                raise
     passed = sum(1 for r in results.values() if not r["fails"])
     limit = next((r["limit"] for r in results.values() if r["limit"]), None)
     print(

@@ -3,6 +3,7 @@ PY := $(if $(wildcard .venv/bin/python),.venv/bin/python,python3)
 RUFF := $(if $(wildcard .venv/bin/ruff),.venv/bin/ruff,ruff)
 PORT ?= 8765
 S ?=
+J ?=
 
 .DEFAULT_GOAL := help
 .PHONY: help lock install hooks run slack test test-live fmt lint check scenario scenarios scenarios-dry gen-docs gen-history clean
@@ -63,11 +64,11 @@ check: lint test ## lint + offline tests (what the hooks run)
 
 scenario: scenarios ## Alias for scenarios (same S= subset)
 
-scenarios: ## Live S1-S7 (spends API credit); subset with S=1,4
-	$(PY) -m scenarios.run $(if $(S),--only $(S))
+scenarios: ## Live S1-S7 (spends API credit); subset with S=1,4; J=4 runs 4 at once
+	$(PY) -m scenarios.run $(if $(S),--only $(S)) $(if $(J),--jobs $(J))
 
-scenarios-dry: ## Scenario plumbing: fake model, gate off (no network)
-	$(PY) -m scenarios.run --dry
+scenarios-dry: ## Scenario plumbing: fake model, gate off (no network); J= as above
+	$(PY) -m scenarios.run --dry $(if $(J),--jobs $(J))
 
 gen-docs: ## Regenerate docs/*.md and docs/_manifest.json (seeded)
 	$(PY) scripts/gen_docs.py

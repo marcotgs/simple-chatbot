@@ -51,6 +51,7 @@ from [`scripts/gen_docs.py`](https://github.com/marcotgs/simple-chatbot/blob/mai
 | `make scenarios-dry` (`python -m scenarios.run --dry`) | Generates the history, loads it with a fake model, checks plumbing: determinism, one extract call per user turn, FTS hit, leak-scan positive controls, call logging | Free, no network: the runner turns the salience gate off (`GATE_MODEL=""`) for `--dry` |
 | `make scenarios` (alias `make scenario`) | All 7, live model | Real OpenRouter credit |
 | `make scenarios S=1,4` | A subset (`--only 1,4`) | Less |
+| `make scenarios J=4` | Up to 4 scenarios at once (`--jobs 4`), see [Parallel runs](#parallel-runs) | Same as live |
 | `python -m scenarios.run --keep-db` | Keeps each temp dir (`chatbot.db`, `calls.jsonl`, `transcript.json`) for inspection | Same as live |
 
 Needs `OPENROUTER_API_KEY` (from `.env` or the environment). `LLM_MODEL` and `MAX_INPUT_TOKENS` are
@@ -58,6 +59,16 @@ honoured.
 
 The fake model in `--dry` replaces only the chat client; the salience gate has its own HTTP
 client, so the runner sets `GATE_MODEL=""` in each dry child process.
+
+### Parallel runs
+
+`J=N` (`--jobs N`, default 1) runs up to N child processes at once; `J` combines with `S=` and
+works for `make scenarios-dry` too. The snapshot load and the scenarios that do not need it (S1,
+S3, S4, S5) start together; S2, S6 and S7 start as soon as the snapshot is ready. The snapshot
+load itself stays one sequential child, so it still bounds a full run. With `J` above 1, every
+child stderr line is prefixed with `[S<id>]`, and the `PASS|FAIL` lines come in finishing order;
+`SUMMARY` stays last and the exit code is unchanged. All children share one OpenRouter key, so a
+high `J` can hit provider rate limits, which show up as failed scenarios; start with `J=3` or `J=4`.
 
 Cost: [`scenarios/README.md`](https://github.com/marcotgs/simple-chatbot/blob/main/scenarios/README.md)
 report a measured 500-turn history load: about $0.24 without the salience gate and $0.07 with it
