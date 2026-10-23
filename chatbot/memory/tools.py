@@ -10,20 +10,19 @@ from chatbot.memory import doc_notes, facts, forget, retrieval
 # a correction ("it is X, not Y") goes through extraction, keeping the old value.
 # ponytail: English keyword check; extend the verb list if other languages are needed.
 _FORGET_ASK = re.compile(r"\b(forget|delete|erase|remove|wipe|purge)\b", re.I)
-# A negation up to 4 words before the verb keeps the value ("I do not want you to delete X"),
-# and so does every verb chained to it ("don't forget or delete X"); only whitespace may separate
-# them, so a comma or period ends the negated clause.
-_VERB = r"(?:forget|delete|erase|remove|wipe|purge)"
+# A negation up to 4 words before the verb keeps the value ("I do not want you to delete X";
+# punctuation and markup other than a sentence break do not end it: "do NOT, forget X",
+# "don't *forget* X", "don't (ever) forget X"). It is found on the whole message before
+# the sentence split (so "don't\nforget X" counts), and a sentence holding one is refused as a
+# whole (fail closed: "don't forget X, just remove Y" deletes nothing).
 _NOT_FORGET = re.compile(
-    r"(?:\b(?:not|never|no|dont|cant|wont)\b|n['’ʼ`]t\b)(?:\s+\w+){0,4}?\s+"
-    + _VERB
-    + r"\b(?:\s+(?:or|and|nor)\s+"
-    + _VERB
-    + r"\b)*",
+    r"(?:\b(?:not|never|no|dont|cant|cannot|wont|shouldnt|mustnt|wouldnt|couldnt|didnt|doesnt)\b"
+    r"|n['’ʼ`]t\b)(?:[^\w.?!;]+\w+){0,4}?[^\w.?!;]+(?:forget|delete|erase|remove|wipe|purge)\b",
     re.I,
 )
 # A forget ask counts only inside its own sentence ("Forget my address. My partner is Bob.").
 _CLAUSE = re.compile(r"[.?!;]+(?:\s+|$)|\n")
+_NEGATED = "\x00"  # marks a negated ask; a user typing it only gets a refusal
 _FILLER = {"my", "the", "a", "an", "please"}
 
 
@@ -77,7 +76,9 @@ def _forget(user_id, thread_id, subject):
     )
     typed = row["content"].split(uploads.NOTE_PREFIX, 1)[0] if row else ""
     keys = {forget._words(f["key"]) for f in facts.get_active_facts(user_id, thread_id)}
-    asks = [s for s in _CLAUSE.split(typed) if _FORGET_ASK.search(_NOT_FORGET.sub("", s))]
+    # "_" is markup here as in forget._words ("_don't_ forget X")
+    marked = _NOT_FORGET.sub(_NEGATED, typed.replace("_", " "))
+    asks = [s for s in _CLAUSE.split(marked) if _NEGATED not in s and _FORGET_ASK.search(s)]
     if not any(_names(s, subject, keys) for s in asks):
         return (
             "error: not run. forget only runs when the user's current message explicitly asks to "

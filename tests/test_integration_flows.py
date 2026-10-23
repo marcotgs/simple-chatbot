@@ -553,6 +553,8 @@ class ForgetFlowTest(FlowCase):
             "Never forget nor delete my home address",
             "I don't want you to ever delete my home address",
             "Under no circumstances whatsoever should you delete my home address",
+            # R8-SEC: a comma does not end a negation, so the whole sentence is refused.
+            "never forget, then delete my home address",
             # R5-SEC-S1: the subject words must be typed as one run, not scattered.
             "please remove the home page address from the doc",
         ):
@@ -570,16 +572,13 @@ class ForgetFlowTest(FlowCase):
                 core.ingest_turn(u, t, "user", "Please forget my home address")
                 out = memory_tools._forget(u, t, subject=subject)
                 self.assertFalse(out.startswith("error"), out)
-        # A comma or period ends the negated clause: the later request still runs.
-        for text in (
-            "never forget, then delete my home address",
-            "Can you erase my home address? I don't need it",
-        ):
+        # A sentence break ends the negation: the request in the earlier sentence still runs.
+        for text in ("Can you erase my home address? I don't need it",):
             with self.subTest(text):
                 core.ingest_turn(u, t, "user", text)
                 out = memory_tools._forget(u, t, subject="home address")
                 self.assertFalse(out.startswith("error"), out)
-        self.assertEqual(len(self.fake.of("forget_resolve")), 5)
+        self.assertEqual(len(self.fake.of("forget_resolve")), 4)
 
     def test_forgotten_recipient_is_blocked(self):
         """AC-11 + W-SEC1: a forgotten person is refused as send_message recipient, in any case."""

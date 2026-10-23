@@ -74,6 +74,30 @@ class ForgetGuardTest(unittest.TestCase):
             ("Forget my address.", "address and everything else stored"),
             ("Forget my address.", "my address and all other facts"),
             ("Forget my address. My partner is Sam.", "address partner"),  # other sentence
+            # SEC-C2: a sentence with a negated forget verb is refused as a whole.
+            ("Don't forget my address, just remove the emoji", "address"),
+            ("Never forget my phone number, but delete the draft", "phone number"),
+            ("I don't want you to forget my address, delete nothing", "address"),
+            ("Please don't forget my partner or remove them", "partner"),
+            ("Forget my address, but don't delete my phone number", "phone number"),
+            # SEC-W4: more negations, and a newline after the negation.
+            ("I cannot forget my partner, delete it", "partner"),
+            ("cannot forget my partner", "partner"),
+            ("can not forget my partner", "partner"),
+            ("You shouldn't delete my partner", "partner"),
+            ("No need to forget my partner", "partner"),
+            ("don't\nforget my partner", "partner"),
+            ("do NOT, forget my partner", "partner"),
+            # SEC-W5: markup between the negation and the verb does not end it.
+            ("do *not* forget my partner", "partner"),
+            ("don't *forget* my partner", "partner"),
+            ("don't (ever) forget my partner", "partner"),
+            ('don\'t "forget" my partner', "partner"),
+            ("_don't_ forget my partner", "partner"),
+            ("don't~forget my partner", "partner"),
+            # W2: the documented fail-closed examples.
+            ("No, forget my address", "address"),
+            ("Don't keep it, forget my address", "address"),
         ]:
             with self.subTest(typed=typed, subject=subject):
                 self.assertTrue(self.run_forget(typed, subject).startswith("error: not run"))
