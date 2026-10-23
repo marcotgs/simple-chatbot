@@ -4,14 +4,16 @@
         "name": str,          # unique, used by load_capability(name)
         "one_line": str,      # always-on index line in the system prompt; keep it short
         "instructions": str,  # full text, returned only when the model calls load_capability
-        "tools": [(schema, fn), ...],  # schema={"name","description","parameters"}, fn(user_id, thread_id, **args)->str
+        "tools": [(schema, fn), ...],  # schema={"name","description","parameters"}, fn(user_id,
+        thread_id, **args)->str
     }
 
 Modules are discovered with pkgutil; files starting with "_" are skipped.
 """
+
 import importlib
 import pkgutil
-from typing import Callable
+from collections.abc import Callable
 
 
 def discover() -> dict[str, dict]:
@@ -30,7 +32,9 @@ def discover() -> dict[str, dict]:
 
 def capability_index() -> str:
     """Compact text for the system prompt: one line per capability plus how to load details."""
-    lines = ["Capabilities (call load_capability(name) to read full instructions before first use):"]
+    lines = [
+        "Capabilities (call load_capability(name) to read full instructions before first use):"
+    ]
     for cap in discover().values():
         tools = ", ".join(schema["name"] for schema, _ in cap["tools"])
         lines.append(f"- {cap['name']}: {cap['one_line']} [tools: {tools}]")
@@ -39,7 +43,9 @@ def capability_index() -> str:
 
 def tool_owners() -> dict[str, str]:
     """Tool name -> capability name. Core exposes these tools only after load_capability(name)."""
-    return {schema["name"]: cap["name"] for cap in discover().values() for schema, _ in cap["tools"]}
+    return {
+        schema["name"]: cap["name"] for cap in discover().values() for schema, _ in cap["tools"]
+    }
 
 
 def load_capability(user_id: str, thread_id: str, name: str = "") -> str:
@@ -54,13 +60,17 @@ LOAD_CAPABILITY_SCHEMA = {
     "description": "Return the full instructions for one capability from the index.",
     "parameters": {
         "type": "object",
-        "properties": {"name": {"type": "string", "description": "Capability name from the index."}},
+        "properties": {
+            "name": {"type": "string", "description": "Capability name from the index."}
+        },
         "required": ["name"],
     },
 }
 
 
-def register_all(register: Callable[[str, dict, Callable[..., str]], None] | None = None) -> list[str]:
+def register_all(
+    register: Callable[[str, dict, Callable[..., str]], None] | None = None,
+) -> list[str]:
     """Register every capability tool plus load_capability. Returns the registered tool names.
 
     `register` defaults to core.register_tool, imported lazily so core may import this package.

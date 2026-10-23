@@ -1,4 +1,5 @@
 """SQLite storage. Schema lives in MIGRATIONS; append new entries, never edit applied ones."""
+
 import sqlite3
 import threading
 
@@ -89,7 +90,7 @@ MIGRATIONS = [
         recipient TEXT NOT NULL,
         text TEXT NOT NULL
     );
-    """,
+    """,  # noqa: E501
     # 2: memory subsystem (T3). facts.subject is the normalized fact key.
     """
     ALTER TABLE facts ADD COLUMN source_turn INTEGER;
@@ -112,7 +113,7 @@ MIGRATIONS = [
         ntokens INTEGER NOT NULL,
         created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
     );
-    """,
+    """,  # noqa: E501
 ]
 
 _local = threading.local()

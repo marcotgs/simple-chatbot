@@ -1,12 +1,13 @@
 """send_message: records the message in send_log. Nothing is actually sent anywhere."""
+
 from chatbot import db
 
 
 def _contains_forgotten(text: str) -> bool:
-    try:
-        from chatbot.memory.forget import contains_forgotten
-    except ImportError:  # T3 not landed yet
-        return False
+    from chatbot.memory.forget import (
+        contains_forgotten,
+    )  # lazy: memory imports core lazily; fails closed
+
     return contains_forgotten(text)
 
 
@@ -14,9 +15,11 @@ def send_message(user_id: str, thread_id: str, to: str = "", text: str = "") -> 
     to, text = (to or "").strip(), (text or "").strip()
     if not to or not text:
         return "error: both 'to' and 'text' are required"
-    if _contains_forgotten(text):
-        return ("error: message NOT sent. It contains personal data the user asked to forget. "
-                "Rewrite it without that information and do not mention the forgotten value.")
+    if _contains_forgotten(to) or _contains_forgotten(text):
+        return (
+            "error: message NOT sent. It contains personal data the user asked to forget. "
+            "Rewrite it without that information and do not mention the forgotten value."
+        )
     c = db.conn()
     with c:
         row_id = c.execute(
@@ -36,10 +39,20 @@ CAPABILITY = {
     "one_line": "send a message to a person (logged only)",
     "instructions": INSTRUCTIONS,
     "tools": [
-        ({"name": "send_message", "description": "Send (log) a message to a recipient.",
-          "parameters": {"type": "object", "properties": {
-              "to": {"type": "string", "description": "Recipient name or handle."},
-              "text": {"type": "string", "description": "Message body."}},
-              "required": ["to", "text"]}}, send_message),
+        (
+            {
+                "name": "send_message",
+                "description": "Send (log) a message to a recipient.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "to": {"type": "string", "description": "Recipient name or handle."},
+                        "text": {"type": "string", "description": "Message body."},
+                    },
+                    "required": ["to", "text"],
+                },
+            },
+            send_message,
+        ),
     ],
 }

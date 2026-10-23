@@ -1,4 +1,5 @@
 """Offline checks for chatbot/capabilities. Run: python3 -m unittest discover tests"""
+
 import json
 import os
 import sys
@@ -9,8 +10,9 @@ from types import SimpleNamespace
 from unittest import mock
 
 _tmp = tempfile.mkdtemp()
-os.environ.setdefault("DB_PATH", os.path.join(_tmp, "test.db"))
-os.environ.setdefault("CALL_LOG_PATH", os.path.join(_tmp, "calls.jsonl"))
+os.environ["DB_PATH"] = os.path.join(_tmp, "test.db")
+os.environ["CALL_LOG_PATH"] = os.path.join(_tmp, "calls.jsonl")
+os.environ["GATE_MODEL"] = ""  # offline: the salience gate (on by default) never hits the network
 os.environ.setdefault("OPENROUTER_API_KEY", "test-not-a-key")
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -18,7 +20,9 @@ sys.path.insert(0, str(ROOT))
 from chatbot import capabilities, db, llm  # noqa: E402
 from chatbot.capabilities import docs, linkedin, messaging  # noqa: E402
 
-CLEAN = "We shipped the new onboarding flow this week. Thanks to the whole team.\n\n#product #launch"
+CLEAN = (
+    "We shipped the new onboarding flow this week. Thanks to the whole team.\n\n#product #launch"
+)
 
 
 class LinkedInCheckerTest(unittest.TestCase):
@@ -44,11 +48,15 @@ class LinkedInCheckerTest(unittest.TestCase):
         ]
         for label, text, ok in cases:
             with self.subTest(label):
-                self.assertEqual(linkedin.check_linkedin_post(text) == [], ok, linkedin.check_linkedin_post(text))
+                self.assertEqual(
+                    linkedin.check_linkedin_post(text) == [], ok, linkedin.check_linkedin_post(text)
+                )
 
     def test_validate_tool(self):
         self.assertEqual(linkedin.validate_linkedin_post("u", "t", text=CLEAN), "valid")
-        self.assertTrue(linkedin.validate_linkedin_post("u", "t", text="x" * 1301).startswith("invalid"))
+        self.assertTrue(
+            linkedin.validate_linkedin_post("u", "t", text="x" * 1301).startswith("invalid")
+        )
 
 
 class FakeClient:
@@ -59,8 +67,10 @@ class FakeClient:
     def _create(self, **kw):
         self.calls.append(kw)
         msg = SimpleNamespace(content=self.replies.pop(0), tool_calls=None)
-        return SimpleNamespace(choices=[SimpleNamespace(message=msg)],
-                               usage=SimpleNamespace(prompt_tokens=100, completion_tokens=10))
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=msg)],
+            usage=SimpleNamespace(prompt_tokens=100, completion_tokens=10),
+        )
 
 
 class LinkedInGenerateTest(unittest.TestCase):
@@ -85,6 +95,30 @@ class LinkedInGenerateTest(unittest.TestCase):
         self.assertTrue(out.startswith("error:"))
         self.assertEqual(llm._client.calls, [])
 
+    def test_source_doc_facts_are_only_the_callers(self):
+        c = db.conn()
+        with c:
+            c.execute(
+                "INSERT INTO doc_notes (user_id, doc_id, page, kind, content) VALUES"
+                " ('li-owner', 'li-doc', 1, 'key_fact', 'owner fact: launch 2026-09-17'),"
+                " ('li-other', 'li-doc', 1, 'key_fact', 'other user secret fact')"
+            )
+        llm._client = FakeClient([CLEAN])
+        self.assertEqual(linkedin.write_linkedin_post("li-owner", "t1", "launch", "li-doc"), CLEAN)
+        prompt = llm._client.calls[0]["messages"][-1]["content"]
+        self.assertIn("owner fact", prompt)
+        self.assertNotIn("other user", prompt)
+
+    def test_source_doc_facts_from_another_thread(self):
+        # Notes are cached per user (summarize_doc skips noted pages), so thread B must see A's.
+        c = db.conn()
+        with c:
+            c.execute(
+                "INSERT INTO doc_notes (user_id, thread_id, doc_id, page, kind, content) VALUES"
+                " ('li-x', 'thread-a', 'li-doc2', 1, 'key_fact', 'noted in thread A')"
+            )
+        self.assertIn("noted in thread A", linkedin._doc_key_facts("li-x", "li-doc2"))
+
 
 class FetchDocTest(unittest.TestCase):
     def test_pages_cover_doc_under_cap(self):
@@ -99,7 +133,7 @@ class FetchDocTest(unittest.TestCase):
                 for page in range(1, n + 1):
                     out = docs.fetch_doc("u", "t", doc_id=doc_id, page=page)
                     self.assertTrue(out.startswith(f"[{doc_id} page {page}/{n}]"))
-                    self.assertLessEqual(len(out) / llm.CHARS_PER_TOKEN, 3500)
+                    self.assertLessEqual(llm.estimate_tokens([{"content": out}]), 3000)
                     bodies.append(out.split("\n", 1)[1])
                 self.assertEqual("\n\n".join(bodies), text)
 
@@ -111,11 +145,25 @@ class FetchDocTest(unittest.TestCase):
         self.assertGreaterEqual(manifest["Q3-plan"]["approx_tokens"], 20000)
 
     def test_rejects_traversal_and_unknown(self):
-        for bad in ["../README", "../../etc/passwd", "/etc/passwd", "_manifest", "nope", "", "docs/Q3-plan"]:
+        for bad in [
+            "../README",
+            "../../etc/passwd",
+            "/etc/passwd",
+            "_manifest",
+            "nope",
+            "",
+            "docs/Q3-plan",
+        ]:
             with self.subTest(bad), self.assertRaises(ValueError):
                 docs.fetch_doc("u", "t", doc_id=bad)
         with self.assertRaises(ValueError):
             docs.fetch_doc("u", "t", doc_id="Q3-plan", page=999)
+
+    def test_fetch_doc_paginates_once(self):
+        """R4-S1: fetch_doc indexes the pages it already has instead of paginating again."""
+        with mock.patch.object(docs, "paginate", wraps=docs.paginate) as spy:
+            docs.fetch_doc("u", "t", doc_id="Q3-plan", page=2)
+        self.assertEqual(spy.call_count, 1)
 
     def test_list_docs(self):
         out = docs.list_docs("u", "t")
@@ -125,14 +173,18 @@ class FetchDocTest(unittest.TestCase):
 
 class SendMessageTest(unittest.TestCase):
     def _rows(self, recipient):
-        return db.conn().execute("SELECT * FROM send_log WHERE recipient = ?", (recipient,)).fetchall()
+        return (
+            db.conn().execute("SELECT * FROM send_log WHERE recipient = ?", (recipient,)).fetchall()
+        )
 
     def test_logs_row(self):
         out = messaging.send_message("u1", "t1", to="alice-test", text="hello there")
         self.assertTrue(out.startswith("ok"), out)
         rows = self._rows("alice-test")
         self.assertEqual(len(rows), 1)
-        self.assertEqual((rows[0]["user_id"], rows[0]["thread_id"], rows[0]["text"]), ("u1", "t1", "hello there"))
+        self.assertEqual(
+            (rows[0]["user_id"], rows[0]["thread_id"], rows[0]["text"]), ("u1", "t1", "hello there")
+        )
 
     def test_blocks_forgotten(self):
         fake = SimpleNamespace(contains_forgotten=lambda text: "secret-addr" in text)
@@ -140,6 +192,27 @@ class SendMessageTest(unittest.TestCase):
             out = messaging.send_message("u1", "t1", to="bob-test", text="my secret-addr is here")
         self.assertTrue(out.startswith("error"))
         self.assertEqual(self._rows("bob-test"), [])
+
+    def test_blocks_forgotten_recipient(self):
+        # W-SEC4/W9: real tombstone (no mock), forgotten value used as the recipient.
+        from chatbot.memory import facts, forget
+
+        u = "u-recipient-guard"
+        fid = facts.upsert_fact(u, None, "global", "partner_handle", "jordan-test-0142")
+        resolve = json.dumps({"fact_ids": [fid], "values": [], "search_terms": []})
+
+        def fake_chat(messages, tools=None, purpose="chat", thread_id=None):
+            content = resolve if purpose == "forget_resolve" else ""
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content=content, tool_calls=None))]
+            )
+
+        with mock.patch.object(llm, "chat", fake_chat):
+            self.assertTrue(forget.forget(u, "my partner's handle").startswith("Forgotten"))
+        out = messaging.send_message(u, "t1", to="Jordan-Test 0142", text="hi there")
+        self.assertTrue(out.startswith("error"), out)
+        self.assertNotIn("0142", out)
+        self.assertEqual(self._rows("Jordan-Test 0142"), [])
 
     def test_requires_fields(self):
         self.assertTrue(messaging.send_message("u1", "t1", to="", text="x").startswith("error"))
@@ -153,8 +226,14 @@ class RegistryTest(unittest.TestCase):
         registered = {}
         names = capabilities.register_all(lambda n, s, f: registered.__setitem__(n, (s, f)))
         self.assertEqual(set(names), set(registered))
-        for tool in ["fetch_doc", "list_docs", "send_message", "validate_linkedin_post",
-                     "write_linkedin_post", "load_capability"]:
+        for tool in [
+            "fetch_doc",
+            "list_docs",
+            "send_message",
+            "validate_linkedin_post",
+            "write_linkedin_post",
+            "load_capability",
+        ]:
             self.assertIn(tool, registered)
             self.assertEqual(registered[tool][0]["name"], tool)
         index = capabilities.capability_index()
