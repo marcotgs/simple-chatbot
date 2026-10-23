@@ -179,7 +179,10 @@ class LiveDocsUploadTest(unittest.TestCase):
         self.assert_answered_under_max("csv summary", reply, secs, calls)
         self.assertIn("summarize_doc", self.tools)
         # every CSV page noted (none failed the budget); the model may summarize the txt too
-        self.assertEqual(doc_notes.noted_pages(self.user, csv_doc), set(range(1, csv_pages + 1)))
+        self.assertEqual(
+            doc_notes.noted_pages(self.user, slack_app.THREAD_ID, csv_doc),
+            set(range(1, csv_pages + 1)),
+        )
 
         self.tools.clear()
         first_row = docs.read_page(csv_doc, 3, self.user).lstrip().splitlines()[0]

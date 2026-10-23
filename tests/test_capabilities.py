@@ -104,8 +104,8 @@ class LinkedInGenerateTest(unittest.TestCase):
         c = db.conn()
         with c:
             c.executemany(
-                "INSERT INTO doc_notes (user_id, doc_id, page, kind, content)"
-                " VALUES (?, 'Q3-plan', ?, ?, ?)",
+                "INSERT INTO doc_notes (user_id, thread_id, doc_id, page, kind, content)"
+                " VALUES (?, 't1', 'Q3-plan', ?, ?, ?)",
                 [*rows, ("li-other", 1, "key_fact", "other user secret fact")],
             )
         llm._client = FakeClient([CLEAN])
@@ -114,15 +114,16 @@ class LinkedInGenerateTest(unittest.TestCase):
         self.assertIn("owner fact", prompt)
         self.assertNotIn("other user", prompt)
 
-    def test_source_doc_facts_from_another_thread(self):
-        # Notes are cached per user (summarize_doc skips noted pages), so thread B must see A's.
+    def test_source_doc_facts_stay_in_their_thread(self):
+        # AC-B2-3: thread B never drafts from notes made in thread A.
         c = db.conn()
         with c:
             c.execute(
                 "INSERT INTO doc_notes (user_id, thread_id, doc_id, page, kind, content) VALUES"
                 " ('li-x', 'thread-a', 'li-doc2', 1, 'key_fact', 'noted in thread A')"
             )
-        self.assertIn("noted in thread A", linkedin._doc_key_facts("li-x", "li-doc2"))
+        self.assertIn("noted in thread A", linkedin._doc_key_facts("li-x", "thread-a", "li-doc2"))
+        self.assertEqual(linkedin._doc_key_facts("li-x", "thread-b", "li-doc2"), "")
 
 
 class LinkedInDocFactsTest(unittest.TestCase):
@@ -140,11 +141,11 @@ class LinkedInDocFactsTest(unittest.TestCase):
         c = db.conn()
         with c:
             c.executemany(
-                "INSERT INTO doc_notes (user_id, doc_id, page, kind, content)"
-                " VALUES (?, ?, ?, ?, ?)",
+                "INSERT INTO doc_notes (user_id, thread_id, doc_id, page, kind, content)"
+                " VALUES (?, 't1', ?, ?, ?, ?)",
                 rows,
             )
-        facts = linkedin._doc_key_facts(user, "li-b9", "post about the public launch")
+        facts = linkedin._doc_key_facts(user, "t1", "li-b9", "post about the public launch")
         self.assertTrue(facts.startswith("- Public launch date: 2026-09-17"), facts[:200])
         for page in range(1, 13):
             self.assertIn(f"- p{page} metric 0:", facts)
@@ -195,8 +196,8 @@ class LinkedInDocFactsTest(unittest.TestCase):
         c = db.conn()
         with c:
             c.execute(
-                "INSERT INTO doc_notes (user_id, doc_id, page, kind, content)"
-                " VALUES (?, 'Q3-plan', 1, 'key_fact', 'fact from page 1')",
+                "INSERT INTO doc_notes (user_id, thread_id, doc_id, page, kind, content)"
+                " VALUES (?, 't1', 'Q3-plan', 1, 'key_fact', 'fact from page 1')",
                 (user,),
             )
         fake = self._fake_chat(

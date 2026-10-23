@@ -148,21 +148,40 @@ class UploadsTest(unittest.TestCase):
         c = db.conn()
         with c:
             c.execute(
-                "INSERT INTO doc_notes (user_id, doc_id, page, kind, content) VALUES (?, ?, 1, "
-                "'summary', 'old notes')",
+                "INSERT INTO doc_notes (user_id, thread_id, doc_id, page, kind, content)"
+                " VALUES (?, 't', ?, 1, 'summary', 'old notes')",
                 ("up-re", doc_id),
             )
         self.data = b"new"
         uploads.ingest("up-re", self._file("r.txt"), "tok")
         self.assertEqual(docs.read_page(doc_id, 1, "up-re"), "new")
-        self.assertEqual(doc_notes.noted_pages("up-re", doc_id), set())
+        self.assertEqual(doc_notes.noted_pages("up-re", "t", doc_id), set())
+
+    def test_reupload_drops_stale_notes_in_every_thread(self):
+        # AC-B2-3 edge: notes are per thread, but a re-upload must clear all threads' notes.
+        self.data = b"old"
+        doc_id, _, _ = uploads.ingest("up-re2", self._file("r.txt"), "tok")
+        c = db.conn()
+        with c:
+            c.executemany(
+                "INSERT INTO doc_notes (user_id, thread_id, doc_id, page, kind, content)"
+                " VALUES ('up-re2', ?, ?, 1, 'key_fact', 'old fact')",
+                [("a", doc_id), ("b", doc_id), (None, doc_id)],
+            )
+        self.data = b"new"
+        uploads.ingest("up-re2", self._file("r.txt"), "tok")
+        for t in ("a", "b"):
+            self.assertEqual(doc_notes.noted_pages("up-re2", t, doc_id), set())
+            self.assertNotIn("old fact", doc_notes.search_doc_notes("up-re2", t, "old fact"))
+        n = c.execute("SELECT COUNT(*) FROM doc_notes WHERE user_id = 'up-re2'").fetchone()[0]
+        self.assertEqual(n, 0)  # legacy NULL-thread rows go too
 
     def test_uploads_listed_next_to_seeded_docs_and_in_note_search(self):
         (Path(self.dir) / "up-sd").mkdir()
         (Path(self.dir) / "up-sd" / "upload-Q3-plan.md").write_text("upload")
         self.assertIn("Q3-plan", docs.available_docs("up-sd"))
         self.assertIn("upload-Q3-plan", docs.available_docs("up-sd"))
-        self.assertIn("upload-Q3-plan", doc_notes.search_doc_notes("up-sd", "zzz"))
+        self.assertIn("upload-Q3-plan", doc_notes.search_doc_notes("up-sd", "t", "zzz"))
         self.assertEqual(docs.page_count("upload-Q3-plan", "up-sd"), 1)
 
 

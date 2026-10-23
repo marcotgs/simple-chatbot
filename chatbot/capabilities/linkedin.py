@@ -124,20 +124,19 @@ def generate_linkedin_post(brief: str, facts: str = "", thread_id: str | None = 
     )
 
 
-def _doc_key_facts(user_id: str, doc_id: str, brief: str = "") -> str:
-    """This user's key facts already extracted for a doc (doc_notes), never the raw doc. Notes are
-    cached per user (summarize_doc skips noted pages), so no thread filter. Facts sharing words
-    with the brief come first, then each page's facts in turn (its most important first), so
-    every page is covered before any page gets a second fact; whole lines up to
-    MAX_FACTS_CHARS."""
+def _doc_key_facts(user_id: str, thread_id: str, doc_id: str, brief: str = "") -> str:
+    """Key facts this thread already extracted for a doc (doc_notes), never the raw doc nor
+    another thread's notes. Facts sharing words with the brief come first, then each page's
+    facts in turn (its most important first), so every page is covered before any page gets a
+    second fact; whole lines up to MAX_FACTS_CHARS."""
     from chatbot.memory.retrieval import STOPWORDS  # lazy: memory imports capabilities
 
     rows = (
         db.conn()
         .execute(
-            "SELECT page, content FROM doc_notes WHERE user_id = ? AND doc_id = ?"
+            "SELECT page, content FROM doc_notes WHERE user_id = ? AND thread_id = ? AND doc_id = ?"
             " AND kind = 'key_fact' ORDER BY page, id",
-            (user_id, doc_id),
+            (user_id, thread_id, doc_id),
         )
         .fetchall()
     )
@@ -170,7 +169,7 @@ def write_linkedin_post(
         # B9/R7-S2: note every page not noted yet (noted pages are skipped, so this is one
         # paginate when the doc is fully noted) instead of drafting from partial notes.
         doc_notes.summarize_doc(user_id, thread_id, doc_id)  # unknown doc -> ValueError
-        facts = _doc_key_facts(user_id, doc_id, brief)
+        facts = _doc_key_facts(user_id, thread_id, doc_id, brief)
         if not facts:
             return (
                 f"error: no key facts could be read from {doc_id!r}, so no post was drafted. "

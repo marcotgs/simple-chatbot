@@ -102,7 +102,7 @@ class ParallelSummarizeTest(unittest.TestCase):
         u, client, out, _ = self.run_summary(4, fail={5})
         self.assertIsInstance(out, RuntimeError)
         self.assertEqual(str(out), "provider error on page 5")  # same error as the old loop
-        self.assertEqual(doc_notes.noted_pages(u, "Report"), set(range(1, PAGES + 1)) - {5})
+        self.assertEqual(doc_notes.noted_pages(u, "t", "Report"), set(range(1, PAGES + 1)) - {5})
         # A retry only notes the failed page (the rest is cached).
         retry = SlowNoteClient()
         llm._client = retry
@@ -134,7 +134,7 @@ class ParallelSummarizeTest(unittest.TestCase):
 
     def test_md_suffix_is_stripped_on_injected_reader(self):
         u, _, _, _ = self.run_summary(4, doc=" Report.md ", n=2)
-        self.assertEqual(doc_notes.noted_docs(u), ["Report"])
+        self.assertEqual(doc_notes.noted_docs(u, "t"), ["Report"])
 
 
 class MdSuffixForgetTest(flows.FlowCase):
@@ -151,7 +151,7 @@ class MdSuffixForgetTest(flows.FlowCase):
         self.send(u, t, f"I live at {addr}.")
         doc = self.upload(u, f"Lease {addr}.txt", b"Lease A terms.")
         doc_notes.summarize_doc(u, t, doc + ".md")
-        self.assertEqual(doc_notes.noted_docs(u), [doc])
+        self.assertEqual(doc_notes.noted_docs(u, t), [doc])
         self.send(
             u, t, "Forget my home address.", [("forget", {"subject": "my home address"})], "Done."
         )

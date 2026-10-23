@@ -28,7 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from unittest import mock  # noqa: E402
 
 from chatbot import config, core, db, llm, memory  # noqa: E402
-from chatbot.capabilities import docs  # noqa: E402
+from chatbot.capabilities import docs, linkedin  # noqa: E402
 from chatbot.memory import doc_notes, extract, facts, forget, retrieval, summary  # noqa: E402
 
 ADDRESS = "17 Fakeham Lane, Testville"  # synthetic
@@ -460,10 +460,54 @@ class MemoryTest(unittest.TestCase):
             u, "slack-dm", "Q3-plan", read_page=lambda d, p: "x", page_count=lambda d: 2
         )
         self.assertEqual(self.fake.count("doc_note"), 2)  # cached per page
-        hit = doc_notes.search_doc_notes(u, "what was the launch date in that plan?")
+        hit = doc_notes.search_doc_notes(u, "slack-dm", "what was the launch date in that plan?")
         self.assertTrue(hit.startswith("[Q3-plan p2 key_fact] Launch date"), hit)
         self.assertIn("Q3-plan", memory.memory_text(u, "slack-dm"))
         self.assertNotIn("Q3-plan", memory.memory_text(u, "another-thread"))  # F3-B1
+
+    def test_doc_notes_stay_in_their_thread(self):
+        """AC-B2-3: notes made in thread A are invisible to search, the doc listing, summarize
+        reuse and LinkedIn key facts in thread B; rows with no thread match no thread."""
+        u = uid()
+        kw = {"read_page": lambda d, p: f"page {p} text", "page_count": lambda d: 2}
+        self.fake.handlers["doc_note"] = lambda text: json.dumps(
+            {"summary": "Timeline", "key_facts": ["Launch date: 2026-11-03"]}
+        )
+        doc_notes.summarize_doc(u, "a", "Q3-plan", **kw)
+        self.assertEqual(self.fake.count("doc_note"), 2)
+        self.assertIn("2026-11-03", doc_notes.search_doc_notes(u, "a", "launch date"))
+        self.assertIn("2026-11-03", linkedin._doc_key_facts(u, "a", "Q3-plan"))
+        self.assertEqual(doc_notes.noted_docs(u, "a"), ["Q3-plan"])
+
+        miss = doc_notes.search_doc_notes(u, "b", "launch date")
+        self.assertTrue(miss.startswith("No matching document notes."), miss)
+        self.assertNotIn("Q3-plan", miss)  # no "Known documents" from thread A
+        self.assertEqual(doc_notes.noted_docs(u, "b"), [])
+        self.assertEqual(doc_notes.noted_pages(u, "b", "Q3-plan"), set())
+        self.assertEqual(linkedin._doc_key_facts(u, "b", "Q3-plan"), "")
+
+        # B notes the pages itself instead of reusing A's, and A keeps its own notes.
+        self.fake.handlers["doc_note"] = lambda text: json.dumps(
+            {"summary": "Owners", "key_facts": ["Owner of billing: Dana Kim"]}
+        )
+        out = doc_notes.summarize_doc(u, "b", "Q3-plan", **kw)
+        self.assertEqual(self.fake.count("doc_note"), 4)
+        self.assertIn("Dana Kim", out)
+        self.assertNotIn("2026-11-03", out)
+        self.assertIn("2026-11-03", doc_notes.search_doc_notes(u, "a", "launch date"))
+        self.assertNotIn("Dana Kim", doc_notes.search_doc_notes(u, "a", "owner billing"))
+
+        c = db.conn()
+        with c:
+            c.execute(
+                "INSERT INTO doc_notes (user_id, doc_id, page, kind, content) VALUES (?, "
+                "'legacy-doc', 1, 'key_fact', 'legacy unthreaded fact')",
+                (u,),
+            )
+        for t in ("a", "b"):
+            self.assertNotIn("legacy", doc_notes.search_doc_notes(u, t, "legacy unthreaded"))
+            self.assertNotIn("legacy-doc", doc_notes.noted_docs(u, t))
+            self.assertEqual(linkedin._doc_key_facts(u, t, "legacy-doc"), "")
 
     # C3: the real reader, no injected fake.
     def test_summarize_doc_with_real_reader(self):
@@ -484,7 +528,7 @@ class MemoryTest(unittest.TestCase):
         self.assertGreater(n, 1)
         self.assertEqual(self.fake.count("doc_note"), n)  # every page, one bounded call each
         self.assertIn(launch, out)
-        self.assertIn(launch, doc_notes.search_doc_notes(u, "launch date"))
+        self.assertIn(launch, doc_notes.search_doc_notes(u, "t", "launch date"))
         self.assertEqual(
             docs.read_page("Q3-plan", 1), docs.fetch_doc(u, "t", doc_id="Q3-plan").split("\n", 1)[1]
         )

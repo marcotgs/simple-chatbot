@@ -1,4 +1,6 @@
 """Per-page notes + key facts for long documents, so later questions never re-read the doc.
+Notes belong to the thread that made them: every read filters on thread_id (rows with a NULL
+thread match no thread), so one chat never sees another chat's notes.
 
 Notes are model output derived from doc text and are replayed later (search_doc_notes, linkedin),
 so a doc in docs/ is a stored prompt-injection channel: keep docs/ to trusted files."""
@@ -9,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 from chatbot import config, db
 from chatbot.capabilities import docs
 from chatbot.memory._llm import ask_json, log
+from chatbot.memory.facts import normalize_key
 from chatbot.memory.forget import redact_forgotten
 from chatbot.memory.retrieval import STOPWORDS
 
@@ -25,7 +28,7 @@ Return ONLY JSON: {"summary": "...", "key_facts": ["..."]}
   Keep each date with its exact context and distinguish similar ones (launch vs beta vs review vs freeze dates). At most 15, most important first."""  # noqa: E501
 
 
-def note_page(user_id: str, thread_id: str | None, doc_id: str, page: int, text: str) -> dict:
+def note_page(user_id: str, thread_id: str, doc_id: str, page: int, text: str) -> dict:
     """Summarise one page (one model call) and replace its stored notes. Returns the notes."""
     obj = (
         ask_json(
@@ -46,8 +49,9 @@ def note_page(user_id: str, thread_id: str | None, doc_id: str, page: int, text:
     c = db.conn()
     with c:
         c.execute(
-            "DELETE FROM doc_notes WHERE user_id = ? AND doc_id = ? AND page = ?",
-            (user_id, doc_id, page),
+            "DELETE FROM doc_notes WHERE user_id = ? AND thread_id IS ? AND doc_id = ?"
+            " AND page = ?",
+            (user_id, thread_id, doc_id, page),
         )
         c.executemany(
             "INSERT INTO doc_notes (user_id, thread_id, doc_id, page, kind, content) VALUES (?, ?, "
@@ -58,43 +62,55 @@ def note_page(user_id: str, thread_id: str | None, doc_id: str, page: int, text:
     return {"summary": summary, "key_facts": key_facts}
 
 
-def noted_pages(user_id: str, doc_id: str) -> set[int]:
+def noted_pages(user_id: str, thread_id: str, doc_id: str) -> set[int]:
     rows = (
         db.conn()
         .execute(
-            "SELECT DISTINCT page FROM doc_notes WHERE user_id = ? AND doc_id = ?",
-            (user_id, doc_id),
+            "SELECT DISTINCT page FROM doc_notes WHERE user_id = ? AND thread_id = ?"
+            " AND doc_id = ?",
+            (user_id, thread_id, doc_id),
         )
         .fetchall()
     )
     return {r["page"] for r in rows}
 
 
-def noted_docs(user_id: str, limit: int = 10, thread_id: str | None = None) -> list[str]:
-    """Doc ids with notes, newest first. With thread_id: only docs noted in that thread (rows
-    with no thread are then left out of the listing; search still finds them)."""
-    sql, params = "SELECT doc_id FROM doc_notes WHERE user_id = ?", [user_id]
-    if thread_id is not None:
-        sql += " AND thread_id = ?"
-        params.append(thread_id)
+def noted_docs(user_id: str, thread_id: str, limit: int = 10) -> list[str]:
+    """Doc ids noted in this thread, newest first."""
     rows = (
         db.conn()
-        .execute(sql + " GROUP BY doc_id ORDER BY MAX(id) DESC LIMIT ?", (*params, limit))
+        .execute(
+            "SELECT doc_id FROM doc_notes WHERE user_id = ? AND thread_id = ?"
+            " GROUP BY doc_id ORDER BY MAX(id) DESC LIMIT ?",
+            (user_id, thread_id, limit),
+        )
         .fetchall()
     )
     return [r["doc_id"] for r in rows]
 
 
-def search_doc_notes(user_id: str, query: str, doc_id: str | None = None, limit: int = 12) -> str:
-    """Notes ranked by query-word overlap (key facts first on ties), capped."""
+def _norm_doc(doc_id: str) -> str:
+    d = re.sub(r"\.(md|txt|csv|pdf)$", "", doc_id.strip().lower())
+    return normalize_key(d.removeprefix(docs.UPLOAD_PREFIX))
+
+
+def search_doc_notes(
+    user_id: str, thread_id: str, query: str, doc_id: str | None = None, limit: int = 12
+) -> str:
+    """This thread's notes ranked by query-word overlap (key facts first on ties), capped."""
     words = {
         w for w in re.findall(r"\w+", (query or "").lower()) if len(w) > 1 and w not in STOPWORDS
     }
-    sql, params = "SELECT doc_id, page, kind, content FROM doc_notes WHERE user_id = ?", [user_id]
-    if doc_id:
-        sql += " AND doc_id = ? COLLATE NOCASE"
-        params.append(doc_id)
-    # ponytail: Python scoring over all notes of the user; add FTS5 on doc_notes past ~10k notes.
+    sql = "SELECT doc_id, page, kind, content FROM doc_notes WHERE user_id = ? AND thread_id = ?"
+    params = [user_id, thread_id]
+    # The model writes ids loosely ("Q3 plan", "q3_plan.md"): match a noted id by normalized
+    # form, else search the whole thread rather than return nothing.
+    want = _norm_doc(doc_id) if doc_id else ""
+    match = [d for d in noted_docs(user_id, thread_id, limit=1000) if want and _norm_doc(d) == want]
+    if match:
+        sql += f" AND doc_id IN ({', '.join('?' * len(match))})"
+        params += match
+    # ponytail: Python scoring over all notes of the thread; add FTS5 on doc_notes past ~10k notes.
     rows = db.conn().execute(sql + " ORDER BY doc_id, page, id LIMIT 5000", params).fetchall()
     scored = []
     for r in rows:
@@ -104,13 +120,10 @@ def search_doc_notes(user_id: str, query: str, doc_id: str | None = None, limit:
             scored.append((score, r))
     if not scored:
         uploads = docs.uploaded_docs(user_id)
+        known = noted_docs(user_id, thread_id)
         return (
             "No matching document notes."
-            + (
-                f" Known documents: {', '.join(noted_docs(user_id))}."
-                if noted_docs(user_id)
-                else ""
-            )
+            + (f" Known documents: {', '.join(known)}." if known else "")
             + (
                 f" Files the user uploaded (not all noted yet; use summarize_doc, or"
                 f" load_capability('docs') then fetch_doc): {', '.join(uploads)}."
@@ -125,15 +138,14 @@ def search_doc_notes(user_id: str, query: str, doc_id: str | None = None, limit:
     return out if len(out) <= SEARCH_MAX_CHARS else out[: SEARCH_MAX_CHARS - 12] + " [truncated]"
 
 
-def doc_overview(user_id: str, doc_id: str) -> str:
+def doc_overview(user_id: str, thread_id: str, doc_id: str) -> str:
     """Page summaries and key facts, each half of the cap so neither crowds out the other."""
     rows = (
         db.conn()
         .execute(
-            "SELECT page, kind, content FROM doc_notes WHERE user_id = ? AND doc_id = ? COLLATE "
-            "NOCASE"
-            " ORDER BY page, id",
-            (user_id, doc_id),
+            "SELECT page, kind, content FROM doc_notes WHERE user_id = ? AND thread_id = ?"
+            " AND doc_id = ? COLLATE NOCASE ORDER BY page, id",
+            (user_id, thread_id, doc_id),
         )
         .fetchall()
     )
@@ -150,9 +162,10 @@ def doc_overview(user_id: str, doc_id: str) -> str:
 
 
 def summarize_doc(
-    user_id: str, thread_id: str | None, doc_id: str, read_page=None, page_count=None
+    user_id: str, thread_id: str, doc_id: str, read_page=None, page_count=None
 ) -> str:
-    """Map step over every page (one bounded call each, cached per page), then the overview.
+    """Map step over every page (one bounded call each, cached per page and thread: pages noted
+    in another thread are noted again here), then the overview.
     read_page(doc_id, page)->str and page_count(doc_id)->int default to
     chatbot.capabilities.docs. Uncached pages are noted by up to config.DOC_NOTE_WORKERS
     threads; if a page fails, the other pages are still saved, then the first failure (page
@@ -166,7 +179,7 @@ def summarize_doc(
     read_page = read_page or (lambda d, p: docs.read_page(d, p, user_id))
     page_count = page_count or (lambda d: docs.page_count(d, user_id))
     n = int(page_count(doc_id))
-    done = noted_pages(user_id, doc_id)
+    done = noted_pages(user_id, thread_id, doc_id)
     todo = [p for p in range(1, n + 1) if p not in done]
 
     def note(page: int) -> None:
@@ -181,4 +194,4 @@ def summarize_doc(
             futures = [pool.submit(note, page) for page in todo]
         for f in futures:  # every page has finished (and saved) here; re-raise in page order
             f.result()
-    return f"Notes for {doc_id} ({n} pages):\n" + doc_overview(user_id, doc_id)
+    return f"Notes for {doc_id} ({n} pages):\n" + doc_overview(user_id, thread_id, doc_id)

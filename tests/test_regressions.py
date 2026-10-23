@@ -284,7 +284,9 @@ class SummarizeDocRealReaderTest(Base):
             out = doc_notes.summarize_doc(self.u, self.t, "Q3-plan")
         self.assertFalse(out.startswith("error"), out)
         self.assertEqual(spy.call_count, 1)  # R4-S1: one pagination, not one per page
-        self.assertIn("2026-09-17", doc_notes.search_doc_notes(self.u, "launch date", "Q3-plan"))
+        self.assertIn(
+            "2026-09-17", doc_notes.search_doc_notes(self.u, self.t, "launch date", "Q3-plan")
+        )
 
 
 class ServerRequestGuardTest(unittest.TestCase):
