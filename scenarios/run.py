@@ -53,6 +53,7 @@ DRAFT_REQUEST = (
     "of the customer survey."
 )
 STATUS_REQUEST = "Write a 3-sentence status update about the website redesign."
+HISTORY_CHUNK = 50  # turns per progress line while loading history
 
 
 def new_session() -> str:
@@ -101,11 +102,14 @@ class Ctx:
             log(f"  history: {n} messages in {DM} from the snapshot copy")
             return n
         t0 = time.monotonic()
-        n = (
-            gen_history.load_history(USER, DM, turns=turns)
-            if turns
-            else gen_history.load_history(USER, DM)
-        )
+        if not turns:
+            turns = json.loads(gen_history.HISTORY_PATH.read_text())["turns"]
+        n = 0
+        for done in range(HISTORY_CHUNK, len(turns) + HISTORY_CHUNK, HISTORY_CHUNK):
+            # chunked so a long load logs progress instead of looking stuck
+            n += gen_history.load_history(USER, DM, turns=turns[done - HISTORY_CHUNK : done])
+            done = min(done, len(turns))
+            log(f"  loaded {done}/{len(turns)} turns ({time.monotonic() - t0:.0f}s)")
         log(f"  loaded {n} messages into {DM} via core.ingest_turn in {time.monotonic() - t0:.1f}s")
         return n
 
