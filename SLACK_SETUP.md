@@ -2,11 +2,12 @@
 
 The bot uses Socket Mode: it opens an outbound websocket to Slack, so it needs no public URL.
 Every DM from your Slack account goes to the same chat user as the web page, in one thread
-`slack-dm` that never ends. DMs from anyone else get a polite refusal.
+(`slack-dm` at first). `/bot new` starts a fresh session on the next thread (`slack-dm-2`, ...);
+global facts carry over. DMs from anyone else get a polite refusal.
 
 You can also talk to it from any channel it is in, with `/bot <message>` or `@<bot name> <message>`.
 Those replies are **ephemeral**: only you see them (Slack labels them "Only visible to you"), so the bot's
-memory of you never shows up for other channel members. They use the same `slack-dm` thread. Anyone
+memory of you never shows up for other channel members. They use the same thread as your DMs. Anyone
 else who tries gets a refusal that only they can see.
 
 Files you send the bot in the DM (`.txt`, `.md`, `.csv`, `.json`, `.pdf`) are saved as documents only you
@@ -45,22 +46,23 @@ SLACK_USER_ID=U0123ABCD
 Run the bot on its own:
 
 ```
-pip install -e .            # installs slack_bolt
-python -m chatbot.slack_app
+make install                # hashed dev lock + the package (includes slack_bolt)
+make slack                  # python -m chatbot.slack_app
 ```
 
-To host it inside the web server process instead, call `chatbot.slack_app.start_in_thread()` from the server's `main()` (it runs as a daemon thread).
+Or run the web server with `make run`: when both `SLACK_BOT_TOKEN` and `SLACK_APP_TOKEN` are set, `chatbot/server.py` starts the bot in the same process (a daemon thread). No code change needed.
 
 ## 4. Test
 
 1. In Slack, open the app (sidebar **Apps**, or search its name) > **Messages** tab.
-2. Send `hello`. The reply comes back in the DM, usually within a few seconds.
-3. Send `what did I just say?`: it answers from the same `slack-dm` thread.
+2. Send `hello`. The bot posts `:hourglass_flowing_sand: Working on it…` at once, then the reply in the DM, usually within a few seconds.
+3. Send `what did I just say?`: it answers from the same `slack-dm` thread (or `slack-dm-<n>` after `/bot new`).
 4. In the web page, the thread `slack-dm` shows the same conversation.
 5. Invite the bot to a channel: type `/invite @<bot name>` in it. Mentions only reach the bot in channels it is a member of.
 6. In that channel, send `@<bot name> what did I just say?`, then `/bot hello`. Both answers are marked "Only visible to you".
+   `/bot new` answers "New session started."; the next DM starts with no chat history (global facts still apply).
    A mention inside a thread that already has replies is answered in that thread; a top-level mention is answered in the channel.
-7. In the DM, send a small `.txt` file (no message). The bot replies `Got <name>: 1 page(s), N characters. Saved as document upload-<name>.`
+7. In the DM, send a small `.txt` file (no message). The bot posts `:hourglass_flowing_sand: Reading your file…`, then replies `Got <name>: 1 page(s), N characters. Saved as document upload-<name>.`
    Then ask `what does the file I just sent say?`: the answer quotes its content.
 
 Troubleshooting:

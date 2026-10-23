@@ -1,11 +1,14 @@
 # Scenarios S1-S7
 
 ```
-python -m scenarios.run --dry          # no LLM, no credit: generates history, loads it with a fake model, checks plumbing
-python -m scenarios.run                # all 7, live model
-python -m scenarios.run --only 1,4     # a subset
-python -m scenarios.run --keep-db      # keep each temp dir (chatbot.db, calls.jsonl, transcript.json)
+python -m scenarios.run --dry       # fake model, gate off: no network, no credit; generates history, loads it, checks plumbing
+python -m scenarios.run             # all 7, live model
+python -m scenarios.run --only 1,4  # a subset
+python -m scenarios.run --keep-db   # keep each temp dir (chatbot.db, calls.jsonl, transcript.json)
 ```
+
+`--dry` fakes the chat model, and the runner sets `GATE_MODEL=""` in each dry child process so the
+salience gate (its own HTTP client) stays off too. `make scenarios-dry` runs the same.
 
 One line per scenario, `PASS|FAIL S<n> <name> - <reason> [calls=.. max_prompt_tokens=..]`, then a `SUMMARY`.
 Exit code 1 if any scenario fails. Conversation progress goes to stderr.
@@ -19,7 +22,7 @@ Exit code 1 if any scenario fails. Conversation progress goes to stderr.
 - History and the 100 filler turns of S3 go through `core.ingest_turn`, the same storage
   and memory path as live messages (one fact-extraction call per user turn); the canned assistant
   replies skip reply generation.
-- The 500-turn history is loaded ONCE per run into a snapshot dir (`SNAPSHOT` line, with load calls by
+- The 500-turn history is loaded ONCE per run into a snapshot dir (`PASS Ssnapshot ...` line, with load calls by
   purpose); S2, S6, S7 and `--dry` each start from a copy of it (DB, WAL, call log, `forget.key`).
   Each scenario's budget line counts only its own calls, not the copied load calls.
 - `scripts/gen_history.py` writes `scenarios/data/history_500.json` + `expected.json` (seeded, no network).
@@ -37,7 +40,9 @@ Exit code 1 if any scenario fails. Conversation progress goes to stderr.
 
 Needs `OPENROUTER_API_KEY` (from `.env` or the environment); `LLM_MODEL` (default `openai/gpt-4.1-mini`)
 and `MAX_INPUT_TOKENS` are honoured. Live runs spend real OpenRouter credit.
-Rough estimate (UNVERIFIED until the first full run): one history load per run = 500 extract calls
-(one per user turn) plus summary rollups, small prompts; S3's 100 filler turns add 100 more; 20 `send`
-calls, each 1-6 model calls plus one extract; the Q3-plan map-reduce. Around 700-800 calls, all under
-8k input tokens, around 1 USD on `openai/gpt-4.1-mini`. The `calls=` column shows the real count.
+One history load per run: 500 salience-gate calls (one per user turn), an extract call for each turn
+the gate passes, plus summary rollups. Measured on the 500-turn load with `GATE_THRESHOLD=0.3`: the
+gate skipped 84% of turns (420 of 500), and the load cost about $0.07 with the gate vs about $0.24
+without it. The rest of a full run (UNVERIFIED estimate): S3's 100 filler turns (gate plus extract
+calls), 20 `send` calls of 1-6 model calls each plus their gate/extract calls, and the Q3-plan
+map-reduce, all under 8k input tokens. The `calls=` column shows the real count.
