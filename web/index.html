@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<meta name="referrer" content="no-referrer"><!-- a ?token= URL must never leak via Referer -->
 <title>Chatbot</title>
 </head>
 <body>
@@ -18,7 +19,14 @@
   <button type="submit">Send</button> <span id="status"></span>
 </form>
 <script>
-const token = new URLSearchParams(location.search).get("token") || "";
+// ?token=... is accepted once: kept in localStorage, sent as a header, removed from the visible URL.
+const qs = new URLSearchParams(location.search);
+if (qs.has("token")) {
+  localStorage.setItem("webToken", qs.get("token"));
+  qs.delete("token");
+  history.replaceState(null, "", location.pathname + (qs.size ? "?" + qs : "") + location.hash);
+}
+const token = localStorage.getItem("webToken") || "";
 const headers = token ? { "X-Web-Token": token } : {};
 const threads = {};   // thread_id -> { messages: [{role, content}], pending: n }
 let current = null;
