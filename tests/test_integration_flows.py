@@ -323,9 +323,7 @@ class IncidentReplayTest(FlowCase):
         self.send(u, t, "Dinner tonight with Ferro and Marisol (Ferro's wife) at the harbour.")
         self.assertEqual(self.active(u)["partner_name"], "Odile Brannock")
         known = self.fake.of("extract")[1]["messages"][1]["content"]
-        self.assertIn(
-            "All known keys (reuse the exact key for the same thing): partner_name", known
-        )
+        self.assertIn("exactly the same thing): partner_name (Odile Brannock)", known)
 
         self.send(u, t, "Saw Marisol again at the market.")
         self.assertEqual(self.active(u)["partner_name"], "Odile Brannock")
@@ -500,7 +498,7 @@ class ForgetFlowTest(FlowCase):
         self.assertIn("upload-forgotten-", listed)
         self.assertEqual(forget.verify_clean(addr), [])
         new_id = listed.split(" ", 1)[0]
-        self.assertEqual(doc_notes.noted_pages(u, new_id), {1})
+        self.assertEqual(doc_notes.noted_pages(u, t, new_id), {1})
         self.assertIn("rent is due monthly", docs.fetch_doc(u, t, doc_id=new_id))
 
     def test_forget_rename_never_overwrites_another_upload(self):
@@ -942,12 +940,10 @@ class SlackFlowTest(FlowCase):
             lambda **kw: responses.append(kw),
         )
         self.assertEqual(acks, [1])
+        self.assertIn(responses[0].pop("text"), slack_app.ACKS)
         self.assertEqual(
             responses,
-            [
-                {"text": slack_app.ACK, "response_type": "ephemeral"},
-                {"text": answer, "response_type": "ephemeral"},
-            ],
+            [{"response_type": "ephemeral"}, {"text": answer, "response_type": "ephemeral"}],
         )
         posted = []
         client = SimpleNamespace(chat_postEphemeral=lambda **kw: posted.append(kw))
@@ -955,10 +951,11 @@ class SlackFlowTest(FlowCase):
             {"user": OWNER, "channel": "C9", "ts": uid("ts"), "text": f"<@UBOT> {question}"},
             client,
         )
+        self.assertIn(posted[0].pop("text"), slack_app.ACKS)
         self.assertEqual(
             posted,
             [
-                {"channel": "C9", "user": OWNER, "text": slack_app.ACK, "thread_ts": None},
+                {"channel": "C9", "user": OWNER, "thread_ts": None},
                 {"channel": "C9", "user": OWNER, "text": answer, "thread_ts": None},
             ],
         )
@@ -980,7 +977,9 @@ class SlackFlowTest(FlowCase):
         self.fake.script = ["Noted.", "Fine."]
         slack_app.handle_message(self._event(f"My dentist is {dentist}."), self.said.append)
         slack_app.handle_message(self._event("In this chat, answer in haiku."), self.said.append)
-        self.assertEqual(self.said, [slack_app.ACK, "Noted.", slack_app.ACK, "Fine."])
+        self.assertIn(self.said[0], slack_app.ACKS)
+        self.assertIn(self.said[2], slack_app.ACKS)
+        self.assertEqual(self.said[1::2], ["Noted.", "Fine."])
         self.fake.script = [[("summarize_doc", {"doc_id": "upload-lease"})], "Done."]
         ev = self._event("summarize it", files=[("lease.txt", b"Lease. Rent 2150 EUR.")])
         slack_app.handle_message(ev, self.said.append)
@@ -1009,7 +1008,9 @@ class SlackFlowTest(FlowCase):
 
         self.said.clear()
         slack_app.handle_message(self._event("who is my dentist? (dm)"), self.said.append)
-        self.assertEqual(self.said, [slack_app.ACK, f"Your dentist is {dentist}"])
+        self.assertEqual(len(self.said), 2)
+        self.assertIn(self.said[0], slack_app.ACKS)
+        self.assertEqual(self.said[1], f"Your dentist is {dentist}")
         self._ask_everywhere("who is my dentist now?", f"Your dentist is {dentist}")
         self.assertEqual(self._stored("who is my dentist", "slack-dm-2", user), 3)
         self.assertEqual(self._stored("who is my dentist", "slack-dm", user), 2)
@@ -1045,7 +1046,7 @@ class SlackFlowTest(FlowCase):
             quote_tool(),
         ]
         slack_app.handle_message(ev, self.said.append)
-        self.assertEqual(self.said[0], slack_app.ACK_FILE)
+        self.assertIn(self.said[0], slack_app.ACKS_FILE)
         self.assertIn("Got handover.txt", self.said[1])
         self.assertIn(f"Go-live date: {go_live}", self.said[2])
         user_turn = [m for m in self.fake.of("chat")[0]["messages"] if m["role"] == "user"][-1]
@@ -1134,7 +1135,9 @@ class SlackFlowTest(FlowCase):
         ev = self._event("ping redelivery " + uuid.uuid4().hex[:6])
         slack_app.handle_message(ev, self.said.append)
         slack_app.handle_message(dict(ev), self.said.append)
-        self.assertEqual(self.said, [slack_app.ACK, "ok"])
+        self.assertEqual(len(self.said), 2)
+        self.assertIn(self.said[0], slack_app.ACKS)
+        self.assertEqual(self.said[1], "ok")
         self.assertEqual(len(self.fake.of("chat")), 1)
 
         self.said.clear()
@@ -1447,14 +1450,15 @@ class ScopeFlowTest(FlowCase):
         self.assertEqual({r["value"]: r["scope"] for r in rows}["kept local"], "session")
 
     def test_uploaded_doc_is_listed_only_in_the_thread_that_noted_it(self):
-        """F3-B1 + Q-24: an upload summarized in thread A is listed in A's memory block only; a
-        new thread B does not see its id, but an explicit search from B still finds the notes."""
+        """F3-B1 + Q-24 + T3: an upload summarized in thread A is listed in A's memory block only;
+        a new thread B does not see its id, and a search from B does not find A's notes."""
         u = uid("f3b1")
         doc = self.upload(u, "lease.txt", b"Lease agreement. Rent 2150 EUR from 2027-01-01.")
         self.send(u, "a", "Summarize the file.", [("summarize_doc", {"doc_id": doc})], "Done.")
         self.assertIn(doc, self.system_of(u, "a"))
         self.assertNotIn(doc, self.system_of(u, "b"))
-        self.assertIn("2150", doc_notes.search_doc_notes(u, "rent"))  # still user-scoped
+        self.assertIn("2150", doc_notes.search_doc_notes(u, "a", "rent"))
+        self.assertNotIn("2150", doc_notes.search_doc_notes(u, "b", "rent"))  # thread-scoped
 
 
 # --- (9) JUDGE_MODEL routing ---------------------------------------------------------------------
@@ -1532,7 +1536,9 @@ class MultiUserFlowTest(FlowCase):
         self.assertNotIn(doc, self.system_of(y, t))
         self.assertRaises(ValueError, docs.fetch_doc, y, t, doc_id=doc)
         self.assertNotIn(doc, docs.list_docs(y, t))
-        self.assertIn("No matching document notes", doc_notes.search_doc_notes(y, "ledger balance"))
+        self.assertIn(
+            "No matching document notes", doc_notes.search_doc_notes(y, t, "ledger balance")
+        )
         self.send(y, t, "hello from y")
         found = self.send(
             y, t, "search", [("search_history", {"query": "Corvel bank"})], quote_tool()
