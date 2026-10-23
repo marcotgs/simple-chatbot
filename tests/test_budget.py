@@ -25,7 +25,7 @@ from chatbot import config, core, db, llm  # noqa: E402
 
 
 class FakeClient:
-    """Mimics openai client: .chat.completions.create(**kw). Reports a configurable
+    """Mimics the OpenRouter SDK client: .chat.send(**kw). Reports a configurable
     prompt_tokens."""
 
     def __init__(self, prompt_tokens=None, reply="ok", tool_calls=None):
@@ -33,7 +33,7 @@ class FakeClient:
         self.prompt_tokens = prompt_tokens
         self.replies = list(tool_calls or []) + [None]
         self.reply = reply
-        self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
+        self.chat = SimpleNamespace(send=self._create)
 
     def _create(self, **kw):
         self.calls.append(kw)

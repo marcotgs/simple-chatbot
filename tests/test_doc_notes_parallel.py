@@ -39,12 +39,12 @@ def uid(tag: str) -> str:
 
 
 class SlowNoteClient:
-    """openai-client stand-in for doc_note calls: sleeps SLEEP, answers with notes naming the
+    """SDK client stand-in for doc_note calls: sleeps SLEEP, answers with notes naming the
     page, raises for pages in `fail`."""
 
     def __init__(self, fail=()):
         self.fail, self.requests, self._lock = set(fail), [], threading.Lock()
-        self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
+        self.chat = SimpleNamespace(send=self._create)
 
     def _create(self, **kw):
         page = int(re.search(r"PAGE (\d+):", kw["messages"][1]["content"]).group(1))

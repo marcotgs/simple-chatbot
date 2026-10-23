@@ -4,7 +4,7 @@ Repo: /Users/marcotgs/projects/simple-chatbot (empty, clean). Agents never commi
 
 ## Stack decisions (ponytail ladder)
 - Python 3.11+, stdlib `sqlite3` (+FTS5), stdlib `http.server` serving a bare web page (`web/index.html`, vanilla JS, no build) + JSON API (`POST /send`, curl-able). No CLI.
-- LLM: OpenRouter via `openai` SDK (`base_url=https://openrouter.ai/api/v1`, OpenAI-compatible, one dep). Key in `.env` `OPENROUTER_API_KEY`, never committed. Model in env `LLM_MODEL` (must support tool calling). Budget read from `usage.prompt_tokens`. `slack_bolt` Socket Mode (no public URL needed). Nothing else.
+- LLM: OpenRouter via its official `openrouter` Python SDK (`server_url=https://openrouter.ai/api/v1`, one dep). Key in `.env` `OPENROUTER_API_KEY`, never committed. Model in env `LLM_MODEL` (must support tool calling). Budget read from `usage.prompt_tokens`. `slack_bolt` Socket Mode (no public URL needed). Nothing else.
 - Token budget: `MAX_INPUT_TOKENS` env (default 8000). Preflight estimate (chars/3.5 + margin) trims context; post-call check of `usage.input_tokens`, log to `logs/calls.jsonl` + table `llm_calls`; over budget = raise + retry once with tighter trim.
 
 ## Design core

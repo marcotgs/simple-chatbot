@@ -41,7 +41,7 @@ class FakeClient:
     def __init__(self, error=None):
         self.models = []
         self.error = error
-        self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
+        self.chat = SimpleNamespace(send=self._create)
 
     def _create(self, **kw):
         self.models.append(kw["model"])

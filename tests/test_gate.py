@@ -42,7 +42,7 @@ class FakeClient:
 
     def __init__(self):
         self.calls = 0
-        self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
+        self.chat = SimpleNamespace(send=self._create)
 
     def _create(self, **kw):
         self.calls += 1

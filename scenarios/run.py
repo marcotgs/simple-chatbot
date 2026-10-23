@@ -354,7 +354,7 @@ def install_fake_model() -> None:
         )
         return SimpleNamespace(choices=[SimpleNamespace(message=msg)], usage=usage)
 
-    llm._client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+    llm._client = SimpleNamespace(chat=SimpleNamespace(send=create))
 
 
 def snapshot(x: Ctx):

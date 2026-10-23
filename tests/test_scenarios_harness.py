@@ -115,13 +115,11 @@ class GenHistoryTest(unittest.TestCase):
 
         llm._client = SimpleNamespace(
             chat=SimpleNamespace(
-                completions=SimpleNamespace(
-                    create=lambda **kw: SimpleNamespace(
-                        choices=[
-                            SimpleNamespace(message=SimpleNamespace(content="ok", tool_calls=None))
-                        ],
-                        usage=SimpleNamespace(prompt_tokens=10, completion_tokens=1),
-                    )
+                send=lambda **kw: SimpleNamespace(
+                    choices=[
+                        SimpleNamespace(message=SimpleNamespace(content="ok", tool_calls=None))
+                    ],
+                    usage=SimpleNamespace(prompt_tokens=10, completion_tokens=1),
                 )
             )
         )
@@ -436,13 +434,11 @@ class S4CheckTest(unittest.TestCase):
 
         llm._client = SimpleNamespace(
             chat=SimpleNamespace(
-                completions=SimpleNamespace(
-                    create=lambda **kw: SimpleNamespace(
-                        choices=[
-                            SimpleNamespace(message=SimpleNamespace(content="ok", tool_calls=None))
-                        ],
-                        usage=SimpleNamespace(prompt_tokens=10, completion_tokens=1),
-                    )
+                send=lambda **kw: SimpleNamespace(
+                    choices=[
+                        SimpleNamespace(message=SimpleNamespace(content="ok", tool_calls=None))
+                    ],
+                    usage=SimpleNamespace(prompt_tokens=10, completion_tokens=1),
                 )
             )
         )

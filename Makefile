@@ -10,6 +10,11 @@ S ?=
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
 
+# Lockfiles (uv): uv pip compile pyproject.toml --generate-hashes --universal --no-header
+#   [--extra dev] --exclude-newer <today minus 7 days> -o requirements[-dev].lock
+# Cooldown rule: every pin is >= 7 days old on PyPI. Exceptions need a reason, via
+# --exclude-newer-package <pkg>=<date>: pypdf (security fixes in 6.21.x), ruff (exact pin in pyproject),
+#   certifi (GHSA-6q48-6c7w-9gw2 / PYSEC-2026-4320, fixed in 2026.10.19).
 install: ## Create .venv if missing; install the hashed dev lock and the package (editable)
 	@test -x .venv/bin/python || python3 -m venv .venv
 	.venv/bin/python -m pip install --require-hashes --no-deps -r requirements-dev.lock
