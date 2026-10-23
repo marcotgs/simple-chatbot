@@ -6,6 +6,7 @@ Run standalone: python -m chatbot.slack_app. Or host it in the web process: star
 """
 
 import logging
+import random
 import re
 import threading
 from collections import deque
@@ -19,9 +20,20 @@ NEW_SESSION = "New session started."
 SEEN_MAX = 1000
 REFUSAL = "Sorry, this bot only talks to its owner."
 # Posted the moment an owner's turn starts (no LLM call), so a slow answer is not mistaken for
-# a dead bot. Never stored in messages.
-ACK = ":hourglass_flowing_sand: Working on it…"
-ACK_FILE = ":hourglass_flowing_sand: Reading your file…"
+# a dead bot. Never stored in messages. Varied so it reads like a person, not a spinner; a native
+# "is typing" status needs Slack's assistant threads (assistant:write + app config), not used here.
+ACKS = (
+    "On it, give me a sec.",
+    "Let me take a look…",
+    "Sure, one moment.",
+    "Let me think about that…",
+    "Give me a moment to check.",
+)
+ACKS_FILE = (
+    "Got your file, reading it now…",
+    "Thanks for the file, let me read through it.",
+    "Opening your file, one sec…",
+)
 # Only the line core.send appends (exact prefix, end of reply) becomes a link (R6-SEC-W1).
 _DRAFT_LINE = re.compile(
     rf"\n\n{re.escape(linkedin.DRAFT_LABEL)}: ({re.escape(linkedin.DRAFT_URL)}\S*)\Z"
@@ -72,7 +84,7 @@ def handle_message(event: dict, say) -> None:
         return
     text = event.get("text") or ""
     has_files = subtype == "file_share" or bool(event.get("files"))
-    say(ACK_FILE if has_files else ACK)
+    say(random.choice(ACKS_FILE if has_files else ACKS))
     if has_files:
         notes = _ingest_files(user_id, event.get("files") or [], say)
         if not text.strip():
@@ -179,7 +191,7 @@ def handle_command(ack, command: dict, respond) -> None:
         new_session(user_id)
         reply = NEW_SESSION
     else:
-        respond(text=ACK, response_type="ephemeral")
+        respond(text=random.choice(ACKS), response_type="ephemeral")
         reply = _answer(user_id, text, key)
     respond(text=reply, response_type="ephemeral")
 
@@ -206,7 +218,10 @@ def handle_mention(event: dict, client) -> None:
         reply = "Usage: @mention me followed by your message. Only you see the answer."
     else:
         client.chat_postEphemeral(
-            channel=event.get("channel"), user=sender, text=ACK, thread_ts=event.get("thread_ts")
+            channel=event.get("channel"),
+            user=sender,
+            text=random.choice(ACKS),
+            thread_ts=event.get("thread_ts"),
         )
         reply = _answer(user_id, text, key)
     client.chat_postEphemeral(

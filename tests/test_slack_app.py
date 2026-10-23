@@ -64,7 +64,20 @@ class SlackHandlerTest(unittest.TestCase):
     def test_dm_from_owner_routes_to_core_and_replies(self):
         slack_app.handle_message(self._event(), self._say)
         self.assertEqual(self.calls, [(DEFAULT_USER, "slack-dm", "hello")])
-        self.assertEqual(self.said, [slack_app.ACK, "hi back"])
+        self.assertIn(self.said[0], slack_app.ACKS)
+        self.assertEqual(self.said[1:], ["hi back"])
+
+    def test_acks_vary_and_file_acks_mention_the_file(self):
+        for acks in (slack_app.ACKS, slack_app.ACKS_FILE):
+            self.assertGreater(len(set(acks)), 1)
+        for ack in slack_app.ACKS_FILE:
+            self.assertIn("file", ack)
+
+    def test_acks_are_plain_sentences_not_spinner_emoji(self):
+        # AC-B1-1: no ":hourglass_flowing_sand:"-style shortcode or robotic "Working on it".
+        for ack in slack_app.ACKS + slack_app.ACKS_FILE:
+            self.assertNotRegex(ack, r":[a-z_]+:")
+            self.assertNotIn("Working on it", ack)
 
     def test_ack_is_posted_before_core_runs(self):
         self.reply = "answer"
@@ -72,7 +85,8 @@ class SlackHandlerTest(unittest.TestCase):
         self._fake_send = lambda *a: self.said.append("<core>") or orig(*a)
         core.send = self._fake_send
         slack_app.handle_message(self._event(), self._say)
-        self.assertEqual(self.said, [slack_app.ACK, "<core>", "answer"])
+        self.assertIn(self.said[0], slack_app.ACKS)
+        self.assertEqual(self.said[1:], ["<core>", "answer"])
 
     def test_linkedin_draft_line_becomes_a_clickable_link(self):
         url = "https://www.linkedin.com/feed/?shareActive=true&text=Hi%20there%20%23launch"
@@ -140,7 +154,9 @@ class SlackHandlerTest(unittest.TestCase):
         slack_app.handle_message(ev, self._say)
         slack_app.handle_message(dict(ev), self._say)
         self.assertEqual(len(self.calls), 1)
-        self.assertEqual(self.said, [slack_app.ACK, "hi back"])  # no second ack either
+        self.assertEqual(len(self.said), 2)  # no second ack either
+        self.assertIn(self.said[0], slack_app.ACKS)
+        self.assertEqual(self.said[1], "hi back")
 
     def test_dedupe_falls_back_to_ts(self):
         ev = self._event()
@@ -209,14 +225,12 @@ class SlackCommandAndMentionTest(unittest.TestCase):
     def test_slash_command_acks_first_then_answers_ephemerally(self):
         slack_app.handle_command(self._ack, self._command(), self._respond)
         self.assertEqual(self.calls, [(DEFAULT_USER, "slack-dm", "hello")])
-        self.assertEqual(
-            self.events,
-            [
-                "ack",
-                ("respond", slack_app.ACK, "ephemeral"),
-                ("respond", "answer", "ephemeral"),
-            ],
-        )
+        self.assertEqual(len(self.events), 3)
+        self.assertEqual(self.events[0], "ack")
+        _, ack_text, ack_type = self.events[1]
+        self.assertIn(ack_text, slack_app.ACKS)
+        self.assertEqual(ack_type, "ephemeral")
+        self.assertEqual(self.events[2], ("respond", "answer", "ephemeral"))
 
     def test_slash_command_refuses_non_owner_and_hints_on_empty_text(self):
         cases = {
@@ -280,9 +294,9 @@ class SlackCommandAndMentionTest(unittest.TestCase):
         slack_app.handle_mention(self._mention(thread_ts="1700000000.000001"), client)
         self.assertEqual(self.calls, [(DEFAULT_USER, "slack-dm", "what is on my plate?")])
         post = {"channel": "C1", "user": "U_OWNER", "thread_ts": "1700000000.000001"}
-        self.assertEqual(
-            client.posts, [{**post, "text": slack_app.ACK}, {**post, "text": "answer"}]
-        )
+        self.assertEqual(len(client.posts), 2)
+        self.assertIn(client.posts[0].pop("text"), slack_app.ACKS)
+        self.assertEqual(client.posts, [post, {**post, "text": "answer"}])
 
     def test_mention_cases_never_post_publicly_or_reach_core_wrongly(self):
         cases = {
@@ -306,7 +320,10 @@ class SlackCommandAndMentionTest(unittest.TestCase):
         del ev["client_msg_id"], ev["ts"]
         slack_app.handle_mention(ev, client)
         self.assertEqual(len(self.calls), 1)
-        self.assertEqual([p["text"] for p in client.posts], [slack_app.ACK, "answer"])
+        texts = [p["text"] for p in client.posts]
+        self.assertEqual(len(texts), 2)
+        self.assertIn(texts[0], slack_app.ACKS)
+        self.assertEqual(texts[1], "answer")
 
 
 class _FakeClient:
@@ -362,7 +379,7 @@ class SlackFileShareTest(unittest.TestCase):
         slack_app.handle_message(self._share(), self._say)
         self.assertEqual(self.calls, [])
         self.assertEqual(len(self.said), 2)
-        self.assertEqual(self.said[0], slack_app.ACK_FILE)
+        self.assertIn(self.said[0], slack_app.ACKS_FILE)
         self.assertIn("notes.txt", self.said[1])
         self.assertIn("upload-notes", self.said[1])
         self.assertIn("4 characters", self.said[1])
@@ -379,7 +396,7 @@ class SlackFileShareTest(unittest.TestCase):
 
     def test_unsupported_and_good_file_together(self):
         slack_app.handle_message(self._share("hi", names=("a.exe", "b.md")), self._say)
-        self.assertEqual(self.said[0], slack_app.ACK_FILE)
+        self.assertIn(self.said[0], slack_app.ACKS_FILE)
         self.assertIn("Could not use a.exe", self.said[1])
         self.assertIn("Got b.md", self.said[1])
         self.assertEqual(self.downloads, ["https://files.slack.com/1"])
