@@ -1,6 +1,7 @@
 """LinkedIn posts: deterministic rule checker + a drafting loop that only returns passing posts."""
 
 import re
+from urllib.parse import quote
 
 from chatbot import db, llm
 
@@ -8,6 +9,27 @@ MAX_CHARS = 1300
 MAX_HASHTAGS = 3
 MAX_REGENERATIONS = 3  # after the first draft
 MAX_FACTS_CHARS = 2000
+DRAFT_LABEL = "Open in LinkedIn (draft)"
+DRAFT_URL = "https://www.linkedin.com/feed/?shareActive=true&text="
+MAX_URL_CHARS = 2000  # longer URLs get cut by browsers/proxies; fall back to copy-paste
+
+# Last post that passed the rules in the running turn, per (user_id, thread_id). core.send clears
+# it when a turn starts and pops it when the turn ends; the per-thread lock in send serialises it.
+_drafts: dict[tuple[str, str], str] = {}
+
+
+def draft_line(post: str) -> str:
+    """Reply line that opens LinkedIn's composer prefilled with post (nothing is posted). Built
+    here, never by the model, so the URL cannot be mangled."""
+    url = DRAFT_URL + quote(post, safe="")
+    if len(url) > MAX_URL_CHARS:
+        return "The post is too long for a LinkedIn draft link: copy the text above."
+    return f"{DRAFT_LABEL}: {url}"
+
+
+def pop_draft(user_id: str, thread_id: str) -> str | None:
+    return _drafts.pop((user_id, thread_id), None)
+
 
 RULES = f"""- At most {MAX_CHARS} characters in total.
 - At most {MAX_HASHTAGS} hashtags, and all hashtags go at the very end (nothing but hashtags after the first one).
@@ -110,12 +132,18 @@ def write_linkedin_post(
     if not (brief or "").strip():
         return "error: brief is required"
     facts = _doc_key_facts(user_id, source_doc_id) if source_doc_id else ""
-    return generate_linkedin_post(brief, facts, thread_id)
+    post = generate_linkedin_post(brief, facts, thread_id)
+    if not post.startswith("error:"):
+        _drafts[(user_id, thread_id)] = post
+    return post
 
 
 def validate_linkedin_post(user_id: str, thread_id: str, text: str = "") -> str:
     violations = check_linkedin_post(text)
-    return "valid" if not violations else "invalid: " + "; ".join(violations)
+    if violations:
+        return "invalid: " + "; ".join(violations)
+    _drafts[(user_id, thread_id)] = text
+    return "valid"
 
 
 INSTRUCTIONS = f"""LinkedIn post rules (enforced by code, not optional):
@@ -124,7 +152,8 @@ How to work:
 - Use write_linkedin_post(brief, source_doc_id). Put every key fact (dates, names, numbers) in the brief;
   the drafter does not read documents. It returns a post that already passes the rules, or an error.
 - Return the post to the user verbatim. If you edit it, run validate_linkedin_post(text) before replying.
-- Never paste a whole document into the brief."""  # noqa: E501
+- Never paste a whole document into the brief.
+- The app adds a link that opens the validated post as a LinkedIn draft; never write that link yourself."""  # noqa: E501
 
 CAPABILITY = {
     "name": "linkedin",

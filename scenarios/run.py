@@ -468,6 +468,8 @@ def run_one(sid, keep: bool, snap: Path | None = None, fake: bool = False) -> di
         PRELOADED_ENV: "1" if snap else "0",
         FAKE_LLM_ENV: "1" if fake else "0",
     }
+    if fake:  # B6: the fake replaces llm._client only; the salience gate has its own HTTP client
+        env["GATE_MODEL"] = ""
     if snap:
         shutil.copytree(
             snap, tmp, dirs_exist_ok=True, ignore=shutil.ignore_patterns("transcript.json")

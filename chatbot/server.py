@@ -43,7 +43,7 @@ class Handler(BaseHTTPRequestHandler):
         url = urlparse(self.path)
         if (
             url.path == "/healthz"
-        ):  # liveness only, no data: answered for any Host (Fly checks), before auth
+        ):  # liveness only, no data: answered for any Host (health checks), before auth
             return self._send(200, b"ok", "text/plain; charset=utf-8")
         if not self._same_origin():
             return

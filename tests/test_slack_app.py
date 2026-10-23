@@ -4,7 +4,9 @@ import os
 import sys
 import tempfile
 import unittest
+import uuid
 from pathlib import Path
+from unittest import mock
 
 _tmp = tempfile.mkdtemp()
 os.environ.update(
@@ -62,7 +64,25 @@ class SlackHandlerTest(unittest.TestCase):
     def test_dm_from_owner_routes_to_core_and_replies(self):
         slack_app.handle_message(self._event(), self._say)
         self.assertEqual(self.calls, [(DEFAULT_USER, "slack-dm", "hello")])
-        self.assertEqual(self.said, ["hi back"])
+        self.assertEqual(self.said, [slack_app.ACK, "hi back"])
+
+    def test_ack_is_posted_before_core_runs(self):
+        self.reply = "answer"
+        orig = self._fake_send
+        self._fake_send = lambda *a: self.said.append("<core>") or orig(*a)
+        core.send = self._fake_send
+        slack_app.handle_message(self._event(), self._say)
+        self.assertEqual(self.said, [slack_app.ACK, "<core>", "answer"])
+
+    def test_linkedin_draft_line_becomes_a_clickable_link(self):
+        url = "https://www.linkedin.com/feed/?shareActive=true&text=Hi%20there%20%23launch"
+        self.reply = f"Here it is.\n\nOpen in LinkedIn (draft): {url}"
+        slack_app.handle_message(self._event(), self._say)
+        self.assertEqual(
+            self.said[-1],
+            "Here it is.\n\n<https://www.linkedin.com/feed/?shareActive=true&amp;text="
+            "Hi%20there%20%23launch|Open in LinkedIn (draft)>",
+        )
 
     def test_ignored_events_never_reach_core(self):
         cases = {
@@ -89,7 +109,7 @@ class SlackHandlerTest(unittest.TestCase):
         slack_app.handle_message(ev, self._say)
         slack_app.handle_message(dict(ev), self._say)
         self.assertEqual(len(self.calls), 1)
-        self.assertEqual(self.said, ["hi back"])
+        self.assertEqual(self.said, [slack_app.ACK, "hi back"])  # no second ack either
 
     def test_dedupe_falls_back_to_ts(self):
         ev = self._event()
@@ -118,8 +138,8 @@ class SlackHandlerTest(unittest.TestCase):
                 self.reply = err
                 with self.assertLogs(slack_app.log, "ERROR") if name == "crash" else _nullctx():
                     slack_app.handle_message(self._event(client_msg_id=f"err-{i}"), self._say)
-                self.assertEqual(len(self.said), 1)
-                msg = self.said[0]
+                self.assertEqual(len(self.said), 2)  # ack + error reply
+                msg = self.said[1]
                 for leak in ("Traceback", "boom", "sk-secret", ".py", "9000"):
                     self.assertNotIn(leak, msg)
 
@@ -158,7 +178,14 @@ class SlackCommandAndMentionTest(unittest.TestCase):
     def test_slash_command_acks_first_then_answers_ephemerally(self):
         slack_app.handle_command(self._ack, self._command(), self._respond)
         self.assertEqual(self.calls, [(DEFAULT_USER, "slack-dm", "hello")])
-        self.assertEqual(self.events, ["ack", ("respond", "answer", "ephemeral")])
+        self.assertEqual(
+            self.events,
+            [
+                "ack",
+                ("respond", slack_app.ACK, "ephemeral"),
+                ("respond", "answer", "ephemeral"),
+            ],
+        )
 
     def test_slash_command_refuses_non_owner_and_hints_on_empty_text(self):
         cases = {
@@ -181,6 +208,30 @@ class SlackCommandAndMentionTest(unittest.TestCase):
         self.assertEqual(len(self.calls), 1)
         self.assertEqual(self.events.count("ack"), 2)  # every delivery is still acked
 
+    def test_bot_new_rotates_the_thread_for_every_surface(self):
+        """Q-23(c): '/bot new' answers without core.send; DMs, /bot and @mentions then share the
+        next thread (slack-dm, slack-dm-2, slack-dm-3, ...), read from the DB each time."""
+        user = f"slk-new-{uuid.uuid4().hex[:8]}"  # own user: rotation is stored in the shared DB
+        with mock.patch.object(slack_app, "USER_MAP", {"U_OWNER": user}):
+            self.assertEqual(slack_app.current_thread(user), "slack-dm")
+            slack_app.handle_command(
+                self._ack, self._command(text="new", trigger_id="n1"), self._respond
+            )
+            self.assertEqual(self.calls, [])
+            self.assertEqual(self.events, ["ack", ("respond", "New session started.", "ephemeral")])
+            slack_app.handle_command(self._ack, self._command(trigger_id="t2"), self._respond)
+            slack_app.handle_mention(self._mention(client_msg_id="m2"), _FakeClient())
+            slack_app.handle_message(
+                {"channel_type": "im", "user": "U_OWNER", "text": "hi", "client_msg_id": "d2"},
+                lambda text: None,
+            )
+            self.assertEqual([c[1] for c in self.calls], ["slack-dm-2"] * 3)
+            slack_app.handle_command(
+                self._ack, self._command(text="new", trigger_id="n2"), self._respond
+            )
+            self.assertEqual(slack_app.current_thread(user), "slack-dm-3")
+            self.assertEqual(slack_app.current_thread(f"{user}-other"), "slack-dm")
+
     def _mention(self, **kw):
         ev = {
             "type": "app_mention",
@@ -197,16 +248,9 @@ class SlackCommandAndMentionTest(unittest.TestCase):
         client = _FakeClient()
         slack_app.handle_mention(self._mention(thread_ts="1700000000.000001"), client)
         self.assertEqual(self.calls, [(DEFAULT_USER, "slack-dm", "what is on my plate?")])
+        post = {"channel": "C1", "user": "U_OWNER", "thread_ts": "1700000000.000001"}
         self.assertEqual(
-            client.posts,
-            [
-                {
-                    "channel": "C1",
-                    "user": "U_OWNER",
-                    "text": "answer",
-                    "thread_ts": "1700000000.000001",
-                }
-            ],
+            client.posts, [{**post, "text": slack_app.ACK}, {**post, "text": "answer"}]
         )
 
     def test_mention_cases_never_post_publicly_or_reach_core_wrongly(self):
@@ -231,7 +275,7 @@ class SlackCommandAndMentionTest(unittest.TestCase):
         del ev["client_msg_id"], ev["ts"]
         slack_app.handle_mention(ev, client)
         self.assertEqual(len(self.calls), 1)
-        self.assertEqual(len(client.posts), 1)
+        self.assertEqual([p["text"] for p in client.posts], [slack_app.ACK, "answer"])
 
 
 class _FakeClient:
@@ -286,10 +330,11 @@ class SlackFileShareTest(unittest.TestCase):
     def test_file_without_text_is_stored_and_acked_without_core(self):
         slack_app.handle_message(self._share(), self._say)
         self.assertEqual(self.calls, [])
-        self.assertEqual(len(self.said), 1)
-        self.assertIn("notes.txt", self.said[0])
-        self.assertIn("upload-notes", self.said[0])
-        self.assertIn("4 characters", self.said[0])
+        self.assertEqual(len(self.said), 2)
+        self.assertEqual(self.said[0], slack_app.ACK_FILE)
+        self.assertIn("notes.txt", self.said[1])
+        self.assertIn("upload-notes", self.said[1])
+        self.assertIn("4 characters", self.said[1])
         self.assertIn("kiwi", docs.fetch_doc(DEFAULT_USER, "t", doc_id="upload-notes"))
 
     def test_text_with_file_reaches_core_with_doc_note(self):
@@ -303,8 +348,9 @@ class SlackFileShareTest(unittest.TestCase):
 
     def test_unsupported_and_good_file_together(self):
         slack_app.handle_message(self._share("hi", names=("a.exe", "b.md")), self._say)
-        self.assertIn("Could not use a.exe", self.said[0])
-        self.assertIn("Got b.md", self.said[0])
+        self.assertEqual(self.said[0], slack_app.ACK_FILE)
+        self.assertIn("Could not use a.exe", self.said[1])
+        self.assertIn("Got b.md", self.said[1])
         self.assertEqual(self.downloads, ["https://files.slack.com/1"])
         self.assertIn("upload-b", self.calls[0][2])
         self.assertNotIn("a.exe", self.calls[0][2])
@@ -333,8 +379,8 @@ class SlackFileShareTest(unittest.TestCase):
 
         uploads.download = boom
         slack_app.handle_message(self._share(), self._say)
-        self.assertIn("something went wrong", self.said[0])
-        self.assertNotIn("secret", self.said[0])
+        self.assertIn("something went wrong", self.said[1])
+        self.assertNotIn("secret", self.said[1])
 
 
 if __name__ == "__main__":

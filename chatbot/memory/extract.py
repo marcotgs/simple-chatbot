@@ -7,7 +7,7 @@ on the next turn."""
 
 import re
 
-from chatbot import config, db
+from chatbot import config, db, uploads
 from chatbot.memory import facts, gate
 from chatbot.memory._llm import ask_json, log
 from chatbot.memory.forget import contains_forgotten
@@ -125,7 +125,11 @@ def _known_facts(user_id: str, thread_id: str, msgs: str) -> str:
 
 
 def _extract_chunk(user_id: str, thread_id: str, chunk) -> int:
-    msgs = "\n".join(f"[turn {r['turn_no']}] {r['content'][:PER_MESSAGE_CHARS]}" for r in chunk)
+    # F3-S1: only what the user typed; the Slack file note (untrusted file name) is cut off.
+    msgs = "\n".join(
+        f"[turn {r['turn_no']}] {r['content'].split(uploads.NOTE_PREFIX, 1)[0][:PER_MESSAGE_CHARS]}"
+        for r in chunk
+    )
     if not gate.should_extract(f"MESSAGES:\n{msgs}", thread_id):
         return 0
     known = _known_facts(user_id, thread_id, msgs)

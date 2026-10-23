@@ -4,8 +4,9 @@ Notes are model output derived from doc text and are replayed later (search_doc_
 so a doc in docs/ is a stored prompt-injection channel: keep docs/ to trusted files."""
 
 import re
+from concurrent.futures import ThreadPoolExecutor
 
-from chatbot import db
+from chatbot import config, db
 from chatbot.capabilities import docs
 from chatbot.memory._llm import ask_json, log
 from chatbot.memory.forget import redact_forgotten
@@ -16,11 +17,12 @@ SEARCH_MAX_CHARS = 2500  # ~700 tokens
 OVERVIEW_MAX_CHARS = 6000  # ~1.7k tokens
 
 _PROMPT = """You take notes on ONE page of a long document so later questions can be answered without re-reading it.
+Be concise: short lines, no filler, no repetition.
 Return ONLY JSON: {"summary": "...", "key_facts": ["..."]}
-- summary: at most 120 words on what this page covers.
-- key_facts: every date, deadline, owner/person, number, amount, metric and decision on the page, one self-contained line each
-  that names what it is, e.g. "Launch date (public launch): 2026-11-03", "Owner of billing migration: Dana Kim".
-  Keep each date with its exact context and distinguish similar ones (launch vs beta vs review vs freeze dates). At most 25."""  # noqa: E501
+- summary: at most 60 words on what this page covers.
+- key_facts: the dates, deadlines, owners/people, numbers, amounts, metrics and decisions on the page, one short self-contained line each
+  (at most 20 words) that names what it is, e.g. "Launch date (public launch): 2026-11-03", "Owner of billing migration: Dana Kim".
+  Keep each date with its exact context and distinguish similar ones (launch vs beta vs review vs freeze dates). At most 15, most important first."""  # noqa: E501
 
 
 def note_page(user_id: str, thread_id: str | None, doc_id: str, page: int, text: str) -> dict:
@@ -36,7 +38,7 @@ def note_page(user_id: str, thread_id: str | None, doc_id: str, page: int, text:
     )
     summary = str(obj.get("summary") or "").strip()[:1500]
     raw_facts = obj.get("key_facts") if isinstance(obj.get("key_facts"), list) else []
-    key_facts = [redact_forgotten(str(f).strip())[:300] for f in raw_facts[:25] if str(f).strip()]
+    key_facts = [redact_forgotten(str(f).strip())[:300] for f in raw_facts[:15] if str(f).strip()]
     if not summary and not key_facts:
         log("doc_note", f"no notes for page {page}")
         summary = "(notes unavailable for this page; re-read it with fetch_doc)"
@@ -68,14 +70,16 @@ def noted_pages(user_id: str, doc_id: str) -> set[int]:
     return {r["page"] for r in rows}
 
 
-def noted_docs(user_id: str, limit: int = 10) -> list[str]:
+def noted_docs(user_id: str, limit: int = 10, thread_id: str | None = None) -> list[str]:
+    """Doc ids with notes, newest first. With thread_id: only docs noted in that thread (rows
+    with no thread are then left out of the listing; search still finds them)."""
+    sql, params = "SELECT doc_id FROM doc_notes WHERE user_id = ?", [user_id]
+    if thread_id is not None:
+        sql += " AND thread_id = ?"
+        params.append(thread_id)
     rows = (
         db.conn()
-        .execute(
-            "SELECT doc_id FROM doc_notes WHERE user_id = ? GROUP BY doc_id"
-            " ORDER BY MAX(id) DESC LIMIT ?",
-            (user_id, limit),
-        )
+        .execute(sql + " GROUP BY doc_id ORDER BY MAX(id) DESC LIMIT ?", (*params, limit))
         .fetchall()
     )
     return [r["doc_id"] for r in rows]
@@ -150,15 +154,31 @@ def summarize_doc(
 ) -> str:
     """Map step over every page (one bounded call each, cached per page), then the overview.
     read_page(doc_id, page)->str and page_count(doc_id)->int default to
-    chatbot.capabilities.docs."""
+    chatbot.capabilities.docs. Uncached pages are noted by up to config.DOC_NOTE_WORKERS
+    threads; if a page fails, the other pages are still saved, then the first failure (page
+    order) is raised."""
     if read_page is None and page_count is None:  # paginate once, not once per page
-        pages = docs._pages(doc_id, user_id)[1]
+        path, pages = docs._pages(doc_id, user_id)
+        doc_id = path.stem  # canonical id: forget renames notes by path.stem (R5-SEC-W2)
         read_page, page_count = (lambda d, p: docs._pick(pages, p)), (lambda d: len(pages))
+    else:
+        doc_id = (doc_id or "").strip().removesuffix(".md")
     read_page = read_page or (lambda d, p: docs.read_page(d, p, user_id))
     page_count = page_count or (lambda d: docs.page_count(d, user_id))
     n = int(page_count(doc_id))
     done = noted_pages(user_id, doc_id)
-    for page in range(1, n + 1):
-        if page not in done:
-            note_page(user_id, thread_id, doc_id, page, read_page(doc_id, page))
+    todo = [p for p in range(1, n + 1) if p not in done]
+
+    def note(page: int) -> None:
+        note_page(user_id, thread_id, doc_id, page, read_page(doc_id, page))
+
+    workers = min(config.DOC_NOTE_WORKERS, len(todo))
+    if workers <= 1:
+        for page in todo:
+            note(page)
+    else:
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="doc_note") as pool:
+            futures = [pool.submit(note, page) for page in todo]
+        for f in futures:  # every page has finished (and saved) here; re-raise in page order
+            f.result()
     return f"Notes for {doc_id} ({n} pages):\n" + doc_overview(user_id, doc_id)

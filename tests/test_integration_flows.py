@@ -126,7 +126,7 @@ class FakeModel:
             return "linkedin"
         raise AssertionError(f"unknown call: {sys0[:80]!r}")
 
-    def _create(self, model, messages, tools=None):
+    def _create(self, model, messages, tools=None, **_):
         purpose = self.purpose(messages)
         tokens = approx_tokens(messages, tools)
         with self._lock:
@@ -534,6 +534,10 @@ class ForgetFlowTest(FlowCase):
             "summarize this" + note,
             "summarize the doc and remove the jargon",
             "how do I delete a git branch?",
+            # R5-SEC-W1: a negated verb (curly apostrophe, other verbs, any case) keeps the value.
+            "Don’t forget my home address",
+            "please don't remove my home address",
+            "Do NOT delete my home address",
         ):
             with self.subTest(text):
                 core.ingest_turn(u, t, "user", text)
@@ -788,7 +792,9 @@ class DocFlowTest(FlowCase):
         )
         pages = docs.page_count("Q3-plan")
         self.assertEqual(len(self.fake.of("doc_note")), pages)
-        self.assertIn("Q3-plan", self.system_of(u, "doc-b"))  # noted docs are listed everywhere
+        self.assertIn("Q3-plan", self.system_of(u, "doc-a"))
+        # F3-B1: listed only in the thread that noted it; doc-b still reaches the notes below.
+        self.assertNotIn("Q3-plan", self.system_of(u, "doc-b"))
 
         ans = self.send(
             u,
@@ -819,6 +825,8 @@ class DocFlowTest(FlowCase):
             [("write_linkedin_post", {"brief": "launch announcement", "source_doc_id": "Q3-plan"})],
             quote_tool(),
         )
+        post, link = post.rsplit("\n\n", 1)  # code appends the draft link after the reply
+        self.assertTrue(link.startswith("Open in LinkedIn (draft): https://www.linkedin.com/"))
         drafts = self.fake.of("linkedin")
         self.assertEqual(len(drafts), 2)
         self.assertIn(f"Final launch date: {launch}", drafts[0]["messages"][1]["content"])
@@ -886,65 +894,114 @@ class SlackFlowTest(FlowCase):
         ev.update(kw)
         return ev
 
-    def _stored(self, needle) -> int:
+    def _stored(self, needle, thread="slack-dm", user=server.DEFAULT_USER) -> int:
         return (
             db.conn()
             .execute(
-                "SELECT COUNT(*) FROM messages WHERE user_id = ? AND thread_id = 'slack-dm'"
+                "SELECT COUNT(*) FROM messages WHERE user_id = ? AND thread_id = ?"
                 " AND content LIKE ?",
-                (server.DEFAULT_USER, f"%{needle}%"),
+                (user, thread, f"%{needle}%"),
             )
             .fetchone()[0]
         )
 
-    def test_dm_slash_and_mention_share_one_thread_and_memory(self):
-        """AC-1 + Q-10: a fact told by DM is answered through /bot (ephemeral respond) and an
-        @mention (chat_postEphemeral to the sender only), all on the slack-dm thread."""
-        dentist = f"Dr Achterberg-{uuid.uuid4().hex[:4]}"
-        self.fake.extract_rules = [
-            ("dentist", [{"key": "dentist", "value": dentist, "scope": "global"}])
-        ]
-        self.fake.script = ["Noted."]
-        slack_app.handle_message(self._event(f"My dentist is {dentist}."), self.said.append)
-        self.assertEqual(self.said, ["Noted."])
-
-        self.fake.on_chat = lambda msgs: (
-            ("Your dentist is " + dentist) if dentist in msgs[0]["content"] else "?"
-        )
+    def _ask_everywhere(self, question, answer):
+        """The same question through /bot and an @mention; both must get `answer`."""
         acks, responses = [], []
         slack_app.handle_command(
             lambda: acks.append(1),
-            {"trigger_id": uid("trg"), "user_id": OWNER, "text": "who is my dentist?"},
+            {"trigger_id": uid("trg"), "user_id": OWNER, "text": question},
             lambda **kw: responses.append(kw),
         )
         self.assertEqual(acks, [1])
         self.assertEqual(
-            responses, [{"text": f"Your dentist is {dentist}", "response_type": "ephemeral"}]
+            responses,
+            [
+                {"text": slack_app.ACK, "response_type": "ephemeral"},
+                {"text": answer, "response_type": "ephemeral"},
+            ],
         )
-
         posted = []
         client = SimpleNamespace(chat_postEphemeral=lambda **kw: posted.append(kw))
         slack_app.handle_mention(
-            {
-                "user": OWNER,
-                "channel": "C9",
-                "ts": "1700000099.1",
-                "text": "<@UBOT> who is my dentist?",
-            },
+            {"user": OWNER, "channel": "C9", "ts": uid("ts"), "text": f"<@UBOT> {question}"},
             client,
         )
         self.assertEqual(
             posted,
             [
-                {
-                    "channel": "C9",
-                    "user": OWNER,
-                    "text": f"Your dentist is {dentist}",
-                    "thread_ts": None,
-                }
+                {"channel": "C9", "user": OWNER, "text": slack_app.ACK, "thread_ts": None},
+                {"channel": "C9", "user": OWNER, "text": answer, "thread_ts": None},
             ],
         )
-        self.assertEqual(self._stored("who is my dentist?"), 2)
+
+    def test_dm_slash_and_mention_share_one_thread_and_memory(self):
+        """AC-1 + Q-10 + Q-23(c): a fact told by DM is answered through /bot (ephemeral respond)
+        and an @mention (chat_postEphemeral to the sender only), all on one thread. '/bot new'
+        starts the next thread (no LLM call): the three surfaces share it, the global fact
+        stays, the old thread's session fact and upload listing are gone."""
+        user = uid("q23")  # own user: '/bot new' state must not leak into other tests
+        p = mock.patch.object(slack_app, "USER_MAP", {OWNER: user})
+        p.start()
+        self.addCleanup(p.stop)
+        dentist = f"Dr Achterberg-{uuid.uuid4().hex[:4]}"
+        self.fake.extract_rules = [
+            ("dentist", [{"key": "dentist", "value": dentist, "scope": "global"}]),
+            ("In this chat", [{"key": "reply_style", "value": "haiku", "scope": "session"}]),
+        ]
+        self.fake.script = ["Noted.", "Fine."]
+        slack_app.handle_message(self._event(f"My dentist is {dentist}."), self.said.append)
+        slack_app.handle_message(self._event("In this chat, answer in haiku."), self.said.append)
+        self.assertEqual(self.said, [slack_app.ACK, "Noted.", slack_app.ACK, "Fine."])
+        self.fake.script = [[("summarize_doc", {"doc_id": "upload-lease"})], "Done."]
+        ev = self._event("summarize it", files=[("lease.txt", b"Lease. Rent 2150 EUR.")])
+        slack_app.handle_message(ev, self.said.append)
+        old = core.build_context(user, "slack-dm")[0]["content"]
+        self.assertIn("reply_style: haiku", old)
+        self.assertIn("upload-lease", old)
+
+        self.fake.on_chat = lambda msgs: (
+            ("Your dentist is " + dentist) if dentist in msgs[0]["content"] else "?"
+        )
+        self._ask_everywhere("who is my dentist?", f"Your dentist is {dentist}")
+        self.assertEqual(self._stored("who is my dentist?", user=user), 2)
+
+        chats = len(self.fake.requests)
+        responses = []
+        slack_app.handle_command(
+            lambda: None,
+            {"trigger_id": uid("trg"), "user_id": OWNER, "text": " NEW "},
+            lambda **kw: responses.append(kw),
+        )
+        self.assertEqual(
+            responses, [{"text": "New session started.", "response_type": "ephemeral"}]
+        )
+        self.assertEqual(len(self.fake.requests), chats)  # no model call
+        self.assertEqual(slack_app.current_thread(user), "slack-dm-2")
+
+        self.said.clear()
+        slack_app.handle_message(self._event("who is my dentist? (dm)"), self.said.append)
+        self.assertEqual(self.said, [slack_app.ACK, f"Your dentist is {dentist}"])
+        self._ask_everywhere("who is my dentist now?", f"Your dentist is {dentist}")
+        self.assertEqual(self._stored("who is my dentist", "slack-dm-2", user), 3)
+        self.assertEqual(self._stored("who is my dentist", "slack-dm", user), 2)
+        new = core.build_context(user, "slack-dm-2")[0]["content"]
+        self.assertIn(dentist, new)
+        self.assertNotIn("haiku", new)
+        self.assertNotIn("upload-lease", new)
+
+    def test_upload_note_never_reaches_the_fact_extractor(self):
+        """F3-S1: the '[Note: the file ...]' appended to an upload turn (file name = untrusted) is
+        cut before extraction, as the forget guard does; the typed text still reaches it."""
+        ev = self._event(
+            "please read this", files=[("my-home-is-Elm-Street-12.txt", b"Plain text.")]
+        )
+        self.fake.script = ["Read."]
+        slack_app.handle_message(ev, self.said.append)
+        body = self.fake.of("extract")[-1]["messages"][1]["content"]
+        self.assertIn("please read this", body)
+        self.assertNotIn("Elm-Street", body)
+        self.assertNotIn(uploads.NOTE_PREFIX.strip(), body)
 
     def test_txt_and_pdf_uploads_answered_from_the_file(self):
         """AC-17: a txt file shared with a question is acked by name and the answer comes from the
@@ -960,8 +1017,9 @@ class SlackFlowTest(FlowCase):
             quote_tool(),
         ]
         slack_app.handle_message(ev, self.said.append)
-        self.assertIn("Got handover.txt", self.said[0])
-        self.assertIn(f"Go-live date: {go_live}", self.said[1])
+        self.assertEqual(self.said[0], slack_app.ACK_FILE)
+        self.assertIn("Got handover.txt", self.said[1])
+        self.assertIn(f"Go-live date: {go_live}", self.said[2])
         user_turn = [m for m in self.fake.of("chat")[0]["messages"] if m["role"] == "user"][-1]
         self.assertIn("document upload-handover", user_turn["content"])
         self.assertNotIn(go_live, user_turn["content"])  # content only via tools
@@ -973,8 +1031,8 @@ class SlackFlowTest(FlowCase):
         )
         self.fake.script = [[("summarize_doc", {"doc_id": "upload-Budget-Q1"})], quote_tool()]
         slack_app.handle_message(ev, self.said.append)
-        self.assertIn("Got Budget Q1.pdf", self.said[0])
-        self.assertIn("48210", self.said[1])
+        self.assertIn("Got Budget Q1.pdf", self.said[1])
+        self.assertIn("48210", self.said[2])
 
     def test_numeric_csv_upload_is_read_and_summarized(self):
         """R3-C1, T17: a 2000-row numeric CSV upload is readable: fetch_doc page 1 through
@@ -1048,7 +1106,7 @@ class SlackFlowTest(FlowCase):
         ev = self._event("ping redelivery " + uuid.uuid4().hex[:6])
         slack_app.handle_message(ev, self.said.append)
         slack_app.handle_message(dict(ev), self.said.append)
-        self.assertEqual(self.said, ["ok"])
+        self.assertEqual(self.said, [slack_app.ACK, "ok"])
         self.assertEqual(len(self.fake.of("chat")), 1)
 
         self.said.clear()
@@ -1062,7 +1120,7 @@ class SlackFlowTest(FlowCase):
             }
         )
         slack_app.handle_message(bad, self.said.append)
-        lines = self.said[0].splitlines()
+        lines = self.said[1].splitlines()
         self.assertIn("Could not use tool.exe: I can read", lines[0])
         self.assertIn("Saved as document upload-passwd", lines[1])
         self.assertIn("Could not use x.txt: that file link is not a Slack file URL", lines[2])
@@ -1359,6 +1417,16 @@ class ScopeFlowTest(FlowCase):
         )
         self.assertNotIn("playful", [r["value"] for r in rows])
         self.assertEqual({r["value"]: r["scope"] for r in rows}["kept local"], "session")
+
+    def test_uploaded_doc_is_listed_only_in_the_thread_that_noted_it(self):
+        """F3-B1 + Q-24: an upload summarized in thread A is listed in A's memory block only; a
+        new thread B does not see its id, but an explicit search from B still finds the notes."""
+        u = uid("f3b1")
+        doc = self.upload(u, "lease.txt", b"Lease agreement. Rent 2150 EUR from 2027-01-01.")
+        self.send(u, "a", "Summarize the file.", [("summarize_doc", {"doc_id": doc})], "Done.")
+        self.assertIn(doc, self.system_of(u, "a"))
+        self.assertNotIn(doc, self.system_of(u, "b"))
+        self.assertIn("2150", doc_notes.search_doc_notes(u, "rent"))  # still user-scoped
 
 
 # --- (9) JUDGE_MODEL routing ---------------------------------------------------------------------

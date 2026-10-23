@@ -1,5 +1,6 @@
 """Slack bot over Socket Mode (outbound websocket, no public URL). DMs, `/bot` and @mentions
--> core.send() on one `slack-dm` thread; slash and mention replies are ephemeral (owner only).
+-> core.send() on the owner's current Slack thread (`slack-dm`, then `slack-dm-2`, ... after each
+`/bot new`); slash and mention replies are ephemeral (owner only).
 
 Run standalone: python -m chatbot.slack_app. Or host it in the web process: start_in_thread().
 """
@@ -10,11 +11,18 @@ import threading
 from collections import deque
 
 from chatbot import config, core, db, llm, uploads
+from chatbot.capabilities import linkedin
 from chatbot.server import DEFAULT_USER
 
-THREAD_ID = "slack-dm"  # one DM thread per user that never ends
+THREAD_ID = "slack-dm"  # first Slack session; '/bot new' moves to slack-dm-2, slack-dm-3, ...
+NEW_SESSION = "New session started."
 SEEN_MAX = 1000
 REFUSAL = "Sorry, this bot only talks to its owner."
+# Posted the moment an owner's turn starts (no LLM call), so a slow answer is not mistaken for
+# a dead bot. Never stored in messages.
+ACK = ":hourglass_flowing_sand: Working on it…"
+ACK_FILE = ":hourglass_flowing_sand: Reading your file…"
+_DRAFT_LINE = re.compile(rf"{re.escape(linkedin.DRAFT_LABEL)}: (https://www\.linkedin\.com/\S+)")
 _MENTION = re.compile(r"^\s*<@[A-Z0-9]+(?:\|[^>]*)?>\s*")  # leading <@BOT> in app_mention text
 
 log = logging.getLogger("chatbot.slack")
@@ -60,7 +68,9 @@ def handle_message(event: dict, say) -> None:
         say(REFUSAL)
         return
     text = event.get("text") or ""
-    if subtype == "file_share" or event.get("files"):
+    has_files = subtype == "file_share" or bool(event.get("files"))
+    say(ACK_FILE if has_files else ACK)
+    if has_files:
         notes = _ingest_files(user_id, event.get("files") or [], say)
         if not text.strip():
             return
@@ -87,16 +97,46 @@ def _ingest_files(user_id: str, files: list, say) -> list[str]:
         )
         notes.append(
             f"{uploads.NOTE_PREFIX}{name} I sent is available as document {doc_id} ({pages} "
-            "page(s)); read it with summarize_doc or the docs capability (fetch_doc).]"
+            "page(s)); for an overview use summarize_doc; to read or quote a page use the docs "
+            "capability (fetch_doc).]"
         )
     say("\n".join(lines) or "That message had no files I could read.")
     return notes
 
 
+def _session_key(user_id: str) -> str:
+    return f"slack_session:{user_id}"
+
+
+def current_thread(user_id: str) -> str:
+    """The thread DMs, /bot and @mentions share (AC-1). Stored, so a restart keeps it."""
+    row = (
+        db.conn()
+        .execute("SELECT value FROM settings WHERE key = ?", (_session_key(user_id),))
+        .fetchone()
+    )
+    n = int(row["value"]) if row else 1
+    return THREAD_ID if n <= 1 else f"{THREAD_ID}-{n}"
+
+
+def new_session(user_id: str) -> str:
+    """'/bot new': move the user to the next Slack thread. Global facts carry over; the old
+    thread keeps its history, summary, session facts and doc listing."""
+    c = db.conn()
+    with c:
+        c.execute(
+            "INSERT INTO settings (key, value) VALUES (?, '2') ON CONFLICT (key)"
+            " DO UPDATE SET value = CAST(value AS INTEGER) + 1",
+            (_session_key(user_id),),
+        )
+    return current_thread(user_id)
+
+
 def _answer(user_id: str, text: str, ref: str) -> str:
-    """core.send on the shared slack-dm thread; every failure becomes a short, leak-free reply."""
+    """core.send on the user's current Slack thread; every failure becomes a short, leak-free
+    reply."""
     try:
-        return core.send(user_id, THREAD_ID, text)
+        return _slack_links(core.send(user_id, current_thread(user_id), text))
     except ValueError:
         return "I can only answer text messages, and that one looked empty."
     except llm.BudgetExceeded:
@@ -104,6 +144,14 @@ def _answer(user_id: str, text: str, ref: str) -> str:
     except Exception:
         log.exception("core.send failed for Slack event %s", ref)
         return "Something went wrong on my side. Please try again in a moment."
+
+
+def _slack_links(reply: str) -> str:
+    """The LinkedIn draft line as a clickable mrkdwn link. The URL is percent-encoded except its
+    one '&', which Slack wants escaped; it holds no '<', '>' or '|' that could break the link."""
+    return _DRAFT_LINE.sub(
+        lambda m: f"<{m.group(1).replace('&', '&amp;')}|{linkedin.DRAFT_LABEL}>", reply
+    )
 
 
 def handle_command(ack, command: dict, respond) -> None:
@@ -118,8 +166,12 @@ def handle_command(ack, command: dict, respond) -> None:
     if user_id is None:
         reply = REFUSAL
     elif not text:
-        reply = "Usage: /bot <your message>. Only you see the answer."
+        reply = "Usage: /bot <your message>, or /bot new to start a new session. Only you see it."
+    elif text.lower() == "new":
+        new_session(user_id)
+        reply = NEW_SESSION
     else:
+        respond(text=ACK, response_type="ephemeral")
         reply = _answer(user_id, text, key)
     respond(text=reply, response_type="ephemeral")
 
@@ -145,6 +197,9 @@ def handle_mention(event: dict, client) -> None:
     elif not text:
         reply = "Usage: @mention me followed by your message. Only you see the answer."
     else:
+        client.chat_postEphemeral(
+            channel=event.get("channel"), user=sender, text=ACK, thread_ts=event.get("thread_ts")
+        )
         reply = _answer(user_id, text, key)
     client.chat_postEphemeral(
         channel=event.get("channel"), user=sender, text=reply, thread_ts=event.get("thread_ts")

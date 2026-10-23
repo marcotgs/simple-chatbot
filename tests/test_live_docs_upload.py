@@ -257,9 +257,9 @@ class LiveDocsUploadTest(unittest.TestCase):
                 self.assert_answered_under_max(f"page 3 after 24 turns {label}", reply, secs, calls)
                 self.assertTrue(newest, "no tool result in the final chat payload")
                 self.assertNotIn(core.TOOL_SHORTENED_MARK, newest[0]["content"])
-                if label == "fetch_doc":
-                    self.assertIn("fetch_doc", self.tools)
-                    self.assertIn(page3, newest[0]["content"])
+                # B3: plain words must also reach fetch_doc (not summarize_doc notes)
+                self.assertIn("fetch_doc", self.tools)
+                self.assertIn(page3, newest[0]["content"])
                 self.assertIn(last_code, reply)
 
     def test_pasted_15k_numeric_csv_gets_an_answer_under_max(self):

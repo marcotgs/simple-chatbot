@@ -220,7 +220,8 @@ class SendMessageTest(unittest.TestCase):
 
 class RegistryTest(unittest.TestCase):
     def test_discovers_all(self):
-        self.assertEqual(set(capabilities.discover()), {"docs", "linkedin", "messaging"})
+        # Subset, not equality: adding a capability module must not break this test.
+        self.assertLessEqual({"docs", "linkedin", "messaging"}, set(capabilities.discover()))
 
     def test_register_all_and_index(self):
         registered = {}

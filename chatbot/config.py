@@ -42,8 +42,8 @@ CALL_LOG_PATH = _path("CALL_LOG_PATH", "./logs/calls.jsonl")
 WEB_TOKEN = os.environ.get("WEB_TOKEN", "")
 HOST = os.environ.get("HOST") or "127.0.0.1"
 PORT = int(os.environ.get("PORT") or 8000)
-# Host headers accepted besides loopback (e.g. the Fly hostname); anything else gets 403 (DNS
-# rebinding).
+# Host headers accepted besides loopback (e.g. a reverse proxy's public hostname); anything else
+# gets 403 (DNS rebinding).
 ALLOWED_HOSTS = [
     h.strip().lower() for h in os.environ.get("ALLOWED_HOSTS", "").split(",") if h.strip()
 ]
@@ -53,6 +53,9 @@ SLACK_USER_ID = os.environ.get("SLACK_USER_ID", "")
 # Files sent to the Slack bot: extracted text is stored per user next to the DB (git-ignored data/).
 UPLOADS_DIR = DB_PATH.parent / "uploads"
 MAX_FILE_BYTES = int(os.environ.get("MAX_FILE_BYTES") or 0)  # 0 = unlimited
+# summarize_doc: pages noted in parallel (1 = one page at a time) and the completion cap per note.
+DOC_NOTE_WORKERS = max(1, int(os.environ.get("DOC_NOTE_WORKERS") or 4))
+DOC_NOTE_MAX_TOKENS = int(os.environ.get("DOC_NOTE_MAX_TOKENS") or 500)
 
 if TARGET_INPUT_TOKENS >= MAX_INPUT_TOKENS:
     raise ValueError("TARGET_INPUT_TOKENS must be below MAX_INPUT_TOKENS")

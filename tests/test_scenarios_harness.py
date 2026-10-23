@@ -267,6 +267,19 @@ class LinkedInRulesTest(unittest.TestCase):
             extract_post("Draft:\n```\nPost body #A\n```\nNotes: see acme.com"), "Post body #A"
         )
 
+    def test_extract_post_drops_the_draft_link_line_core_appends(self):
+        """F2: core.send appends the LinkedIn draft line (a URL, or the too-long note) after the
+        post; S7 judges the post only, so the no-link rule is not tripped by it."""
+        from chatbot.capabilities import linkedin
+
+        post = "We shipped it.\n\n#Launch"
+        for line in (linkedin.draft_line(post), linkedin.draft_line("x" * 3000)):
+            with self.subTest(line=line[:30]):
+                reply = f"Here's your post:\n\n{post}\n\nLet me know if you want changes!"
+                got = extract_post(f"{reply}\n\n{line}")
+                self.assertEqual(got, post)
+                self.assertEqual(check_post(got), [])
+
     def test_extract_post_keeps_trailing_chatter_that_is_not_a_closer(self):
         self.assertNotEqual(check_post(extract_post("Post body\n#A\n\nP.S. more text")), [])
 
@@ -364,6 +377,27 @@ class LeakScanTest(unittest.TestCase):
             checks.text_leaks("at 742\nevergreen   TERRACE.", self.NEEDLES[:1]), self.NEEDLES[:1]
         )
         self.assertEqual(checks.text_leaks("I've forgotten it.", self.NEEDLES), [])
+
+
+class DryRunOfflineTest(unittest.TestCase):
+    """B6: --dry fakes llm._client only, so its child process must also get the gate off, else
+    the salience gate makes real HTTP calls (credit) and the 'extract calls == 500' check fails."""
+
+    def test_dry_child_gets_gate_off_live_child_keeps_it(self):
+        envs = []
+
+        def fake_run(cmd, **kw):
+            envs.append(kw["env"])
+            return SimpleNamespace(stdout="", returncode=0)
+
+        with (
+            mock.patch.dict(os.environ, {"GATE_MODEL": "some/gate-model"}),
+            mock.patch.object(run.subprocess, "run", fake_run),
+        ):
+            run.run_one("dry", False, None, fake=True)
+            run.run_one(1, False, None, fake=False)
+        self.assertEqual(envs[0]["GATE_MODEL"], "")
+        self.assertEqual(envs[1]["GATE_MODEL"], "some/gate-model")
 
 
 class S4CheckTest(unittest.TestCase):

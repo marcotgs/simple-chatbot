@@ -64,7 +64,8 @@ def chat(
 
     Raises BudgetExceeded before sending if the estimate is over TARGET_INPUT_TOKENS,
     or after the call if the provider reports prompt_tokens >= MAX_INPUT_TOKENS (input must stay
-    under it). `model` overrides config.LLM_MODEL for this call (judge calls).
+    under it). `model` overrides config.LLM_MODEL for this call (judge calls). Purposes in
+    _max_tokens() get a completion cap.
     """
     estimate = estimate_tokens(messages, tools)
     if estimate > config.TARGET_INPUT_TOKENS:
@@ -76,6 +77,8 @@ def chat(
     kwargs = {"model": model, "messages": messages}
     if tools:
         kwargs["tools"] = tools
+    if cap := _max_tokens(purpose):
+        kwargs["max_tokens"] = cap
     try:
         resp = _get_client().chat.completions.create(**kwargs)
     except Exception as e:  # e.g. a model rejecting tools: say which model, then propagate as today
@@ -109,6 +112,11 @@ def chat(
             f"provider reported {prompt_tokens} prompt tokens, limit is < {config.MAX_INPUT_TOKENS}"
         )
     return resp
+
+
+def _max_tokens(purpose: str) -> int | None:
+    # Per purpose, so callers and test fakes of llm.chat keep their signature.
+    return {"doc_note": config.DOC_NOTE_MAX_TOKENS}.get(purpose)
 
 
 def _record(

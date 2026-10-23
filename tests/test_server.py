@@ -127,7 +127,7 @@ class RequestGuardTest(unittest.TestCase):
 
     def test_healthz_answers_any_host_without_data(self):
         self.assertEqual(
-            self._req("GET", "/healthz", {"Host": "fly-internal:8080"})[::2], (200, b"ok")
+            self._req("GET", "/healthz", {"Host": "health-probe.internal:8080"})[::2], (200, b"ok")
         )
 
     def test_send_requires_json_content_type(self):
@@ -159,12 +159,12 @@ class RequestGuardTest(unittest.TestCase):
                     self._req("GET", "/threads", {"Host": self.local, "Origin": origin})[0], 403
                 )
         self.assertEqual(self._post({**base, "Origin": f"http://{self.local}"})[0], 200)
-        fly = {
+        proxied = {
             "Host": "bot.example.test",
             "Content-Type": "application/json",
             "Origin": "https://bot.example.test",
         }
-        self.assertEqual(self._post(fly)[0], 200)
+        self.assertEqual(self._post(proxied)[0], 200)
 
     def test_no_cors_headers_emitted(self):
         for _status, headers, _ in (

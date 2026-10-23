@@ -17,6 +17,11 @@ _CLOSER = re.compile(
     r"|if you('d| would) like)",
     re.I,
 )
+# The draft line core.send appends after a passing post (not part of the post itself).
+_DRAFT_LINE = re.compile(
+    r"\n[ \t]*(?:Open in LinkedIn \(draft\):|The post is too long for a LinkedIn draft link)"
+    r"[^\n]*\s*\Z"
+)
 _PREAMBLE = re.compile(
     r"^(here('s| is)|sure|absolutely|of course|okay|ok|great|below)\b.*:\s*$|^.{0,80}:\s*$", re.I
 )
@@ -46,8 +51,9 @@ def check_post(text: str) -> list[str]:
 def extract_post(reply: str) -> str:
     """Best-effort: the post inside a model reply. Takes the longest fenced or '---'-separated
     block when present, then strips a one-line preamble ('Here's your post:') and trailing
-    closers ('Let me know if...'). Anything else stays and is judged as part of the post."""
-    reply = (reply or "").strip()
+    closers ('Let me know if...'). The trailing LinkedIn draft line is dropped first. Anything
+    else stays and is judged as part of the post."""
+    reply = _DRAFT_LINE.sub("", (reply or "").strip())
     fenced = re.findall(r"```[^\n]*\n(.*?)```", reply, re.S)
     if fenced:
         reply = max(fenced, key=len).strip()

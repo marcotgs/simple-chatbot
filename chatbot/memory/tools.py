@@ -10,7 +10,9 @@ from chatbot.memory import doc_notes, facts, forget, retrieval
 # a correction ("it is X, not Y") goes through extraction, keeping the old value.
 # ponytail: English keyword check; extend the verb list if other languages are needed.
 _FORGET_ASK = re.compile(r"\b(forget|delete|erase|remove|wipe|purge)\b", re.I)
-_NOT_FORGET = re.compile(r"\b(don'?t|do not|never|not)\s+forget\b", re.I)
+_NOT_FORGET = re.compile(
+    r"\b(don['’]?t|do not|never|not)\s+(forget|delete|erase|remove|wipe|purge)\b", re.I
+)
 
 
 def _search_history(user_id, thread_id, query, limit=5):

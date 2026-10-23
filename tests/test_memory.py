@@ -462,7 +462,8 @@ class MemoryTest(unittest.TestCase):
         self.assertEqual(self.fake.count("doc_note"), 2)  # cached per page
         hit = doc_notes.search_doc_notes(u, "what was the launch date in that plan?")
         self.assertTrue(hit.startswith("[Q3-plan p2 key_fact] Launch date"), hit)
-        self.assertIn("Q3-plan", memory.memory_text(u, "another-thread"))
+        self.assertIn("Q3-plan", memory.memory_text(u, "slack-dm"))
+        self.assertNotIn("Q3-plan", memory.memory_text(u, "another-thread"))  # F3-B1
 
     # C3: the real reader, no injected fake.
     def test_summarize_doc_with_real_reader(self):

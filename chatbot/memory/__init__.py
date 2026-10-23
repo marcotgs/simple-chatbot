@@ -77,7 +77,7 @@ def memory_text(user_id: str, thread_id: str) -> str:
         parts.append(_FILL + "\n" + "\n".join(glob))
     if sess:
         parts.append(_SESSION + "\n" + "\n".join(sess))
-    docs = doc_notes.noted_docs(user_id)
+    docs = doc_notes.noted_docs(user_id, thread_id=thread_id)  # F3-B1: this chat's docs only
     if docs:
         parts.append(
             "Documents with saved notes (use search_doc_notes, not re-reading): " + ", ".join(docs)

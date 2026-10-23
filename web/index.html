@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="referrer" content="no-referrer"><!-- a ?token= URL must never leak via Referer -->
 <title>Chatbot</title>
+<style>#log p { white-space: pre-wrap; }</style><!-- keep the reply's line breaks (multi-paragraph posts) -->
 </head>
 <body>
 <h1>Chatbot</h1>
@@ -16,7 +17,7 @@
 <form id="form">
   <label for="text">Message</label><br>
   <textarea id="text" rows="3" cols="80" required></textarea><br>
-  <button type="submit">Send</button> <span id="status"></span>
+  <button type="submit" id="send">Send</button> <span id="status" role="status"></span>
 </form>
 <script>
 // ?token=... is accepted once: kept in localStorage, sent as a header, removed from the visible URL.
@@ -32,6 +33,28 @@ const threads = {};   // thread_id -> { messages: [{role, content}], pending: n 
 let current = null;
 
 const $ = (id) => document.getElementById(id);
+
+// The server appends this line when a turn produced a validated LinkedIn post.
+const DRAFT = /^Open in LinkedIn \(draft\): (\S+)$/m;
+
+// Anchor for the draft link, or null. Only https://www.linkedin.com URLs are ever rendered as links.
+function draftLink(content) {
+  const m = content.match(DRAFT);
+  if (!m) return null;
+  let u;
+  try { u = new URL(m[1]); } catch { return null; }
+  if (!(u.protocol === "https:" && u.hostname === "www.linkedin.com" && !u.port)) return null;
+  const a = document.createElement("a");
+  a.href = u.href;
+  a.target = "_blank";
+  a.rel = "noopener noreferrer";
+  a.textContent = "Open in LinkedIn (draft)";
+  a.title = "Opens LinkedIn in a new tab (nothing is posted) and copies the post text";
+  // LinkedIn may drop the text parameter: the click also puts the post on the clipboard.
+  const post = u.searchParams.get("text") || "";
+  a.onclick = () => { navigator.clipboard?.writeText(post).catch(() => {}); };
+  return { a, rest: content.replace(m[0], "").trimEnd() };
+}
 
 async function api(path, opts = {}) {
   const res = await fetch(path, { ...opts, headers: { ...headers, ...(opts.headers || {}) } });
@@ -60,11 +83,16 @@ function render() {
       const p = document.createElement("p");
       const who = document.createElement("b");
       who.textContent = m.role + ": ";
-      p.append(who, m.content);        // textContent only, never innerHTML
+      const link = m.role === "assistant" ? draftLink(m.content) : null;
+      // text nodes and createElement only, never innerHTML
+      if (link) p.append(who, link.rest, document.createElement("br"), link.a);
+      else p.append(who, m.content);
       log.append(p);
     }
-    $("status").textContent = threads[current].pending ? "waiting for reply..." : "";
+    $("status").textContent = threads[current].pending ? "working\u2026" : "";
   }
+  // no double submit while this session waits for a reply
+  $("send").disabled = !!(current && threads[current].pending);
   renderSessions();
 }
 
@@ -91,7 +119,7 @@ $("new").onclick = newSession;
 $("form").onsubmit = async (ev) => {
   ev.preventDefault();
   const text = $("text").value.trim();
-  if (!text) return;
+  if (!text || (current && threads[current].pending)) return;
   if (!current) newSession();
   const id = current;   // reply lands in this session even if the user switches away
   const t = threads[id];

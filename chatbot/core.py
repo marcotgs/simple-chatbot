@@ -17,6 +17,7 @@ Memory:
 Documents:
 - Questions about a document: call search_doc_notes. Never claim to remember a document without checking notes.
 - To summarize a document call summarize_doc(doc_id); never page through fetch_doc yourself for a summary.
+- To read, quote or answer from a specific page of a document: load_capability("docs"), then fetch_doc(doc_id, page). summarize_doc only gives an overview; never quote its notes as page text.
 Capabilities:
 - Their tools are available only after load_capability(name); call it first.
 - LinkedIn posts: load_capability("linkedin"), use write_linkedin_post, return the post verbatim.
@@ -311,6 +312,7 @@ def send(user_id: str, thread_id: str, text: str) -> str:
     if not text:
         raise ValueError("text is empty")
     with _thread_lock(user_id, thread_id):
+        linkedin.pop_draft(user_id, thread_id)  # drop a draft left by a turn that raised
         msg_id = ingest_turn(user_id, thread_id, "user", text)
         try:
             always_on = _schemas(_exposed(TOOLS, capabilities.tool_owners(), set()))
@@ -325,11 +327,17 @@ def send(user_id: str, thread_id: str, text: str) -> str:
             raise
         reply = memory.filter_reply(reply)
         ingest_turn(user_id, thread_id, "assistant", reply)
+        # Draft link is appended after storing: a percent-encoded copy of the post in history would
+        # escape forget scrubbing and cost context tokens. The post is redacted before encoding.
+        post = linkedin.pop_draft(user_id, thread_id)
+        if post:
+            reply += "\n\n" + linkedin.draft_line(memory.filter_reply(post))
     return reply
 
 
 # Bottom of the module: both packages import core lazily inside register_all.
 from chatbot import capabilities, memory  # noqa: E402
+from chatbot.capabilities import linkedin  # noqa: E402
 
 capabilities.register_all(register_tool)
 memory.tools.register_all()
