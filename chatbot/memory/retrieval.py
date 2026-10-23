@@ -69,36 +69,58 @@ STOPWORDS = {
 }
 
 
-def fts_query(text: str) -> str:
-    """User text -> FTS5 MATCH string. Every term is a double-quoted \\w+ token, so operators
-    (AND/OR/NOT/NEAR), column filters (:), prefixes (*), ^ and stray quotes are inert. OR-joined."""
+def query_terms(text: str) -> list[str]:
+    """The searchable words of text: lowercase \\w+ tokens, no stopwords, deduped, capped."""
     terms: list[str] = []
     for t in re.findall(r"\w+", (text or "").lower()):
         if len(t) > 1 and t not in STOPWORDS and t not in terms:
             terms.append(t)
-    return " OR ".join(f'"{t}"' for t in terms[:MAX_TERMS])
+    return terms[:MAX_TERMS]
+
+
+def fts_query(text: str) -> str:
+    """User text -> FTS5 MATCH string. Every term is a double-quoted \\w+ token, so operators
+    (AND/OR/NOT/NEAR), column filters (:), prefixes (*), ^ and stray quotes are inert. OR-joined."""
+    return " OR ".join(f'"{t}"' for t in query_terms(text))
+
+
+def search_rows(
+    user_id: str, thread_id: str, query: str, limit: int = 5, before_id: int | None = None
+) -> list:
+    """Best-matching (bm25) messages of this thread with an id below before_id (default: older
+    than the current turn), as rows of turn_no, role, content, snip. Other threads are never
+    searched (session privacy)."""
+    q = fts_query(query)
+    if not q:
+        return []
+    if before_id is None:
+        older, args = (
+            "m.turn_no < (SELECT COALESCE(MAX(turn_no), 0) FROM messages"
+            " WHERE user_id = ? AND thread_id = ?)",
+            (user_id, thread_id),
+        )
+    else:
+        older, args = "m.id < ?", (before_id,)
+    return (
+        db.conn()
+        .execute(
+            "SELECT m.turn_no, m.role, m.content,"
+            " snippet(messages_fts, 0, '', '', ' ... ', 32) AS snip"
+            " FROM messages_fts JOIN messages m ON m.id = messages_fts.rowid"
+            " WHERE messages_fts MATCH ? AND m.user_id = ? AND m.thread_id = ?"
+            f" AND {older} ORDER BY bm25(messages_fts) LIMIT ?",
+            (q, user_id, thread_id, *args, limit),
+        )
+        .fetchall()
+    )
 
 
 def search_history(user_id: str, thread_id: str, query: str, limit: int = 5) -> str:
     """Best-matching earlier messages of this thread (bm25), as short snippets with turn numbers.
     The current turn is excluded; other threads are never searched (session privacy)."""
-    q = fts_query(query)
-    if not q:
+    if not fts_query(query):
         return "No searchable words in the query."
-    limit = max(1, min(int(limit or 5), 10))
-    rows = (
-        db.conn()
-        .execute(
-            "SELECT m.turn_no, m.role, snippet(messages_fts, 0, '', '', ' ... ', 32) AS snip"
-            " FROM messages_fts JOIN messages m ON m.id = messages_fts.rowid"
-            " WHERE messages_fts MATCH ? AND m.user_id = ? AND m.thread_id = ?"
-            " AND m.turn_no < (SELECT COALESCE(MAX(turn_no), 0) FROM messages WHERE user_id = ? "
-            "AND thread_id = ?)"
-            " ORDER BY bm25(messages_fts) LIMIT ?",
-            (q, user_id, thread_id, user_id, thread_id, limit),
-        )
-        .fetchall()
-    )
+    rows = search_rows(user_id, thread_id, query, max(1, min(int(limit or 5), 10)))
     if not rows:
         return "No earlier messages match."
     out = "\n".join(f"[turn {r['turn_no']} {r['role']}] {r['snip']}" for r in rows)
