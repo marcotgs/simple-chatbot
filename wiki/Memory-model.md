@@ -17,9 +17,8 @@ builds one block, capped at `CONTEXT_MAX_CHARS = 3150` (about 900 tokens), fence
    win, then the oldest keys. Keys that did not fit are named, with a pointer to
    `get_fact_history`.
 2. "Documents with saved notes": docs whose notes were written in **this** thread (up to 10,
-   newest first). Docs noted in other threads are not listed here, even after a cached
-   `summarize_doc` call in this thread (it writes no new rows), but `search_doc_notes`, `list_docs` and
-   `fetch_doc` stay user-scoped, and uploads belong to the user, not the thread.
+   newest first). Notes and `search_doc_notes` are per thread; `list_docs`, `fetch_doc` and
+   uploads stay per user, not per thread.
 3. The tail of this chat's rolling summary, if room is left.
 
 ## Fact scopes
@@ -53,8 +52,9 @@ pass per user turn.
 3. **Extractor**: one JSON call on `JUDGE_MODEL` (defaults to `LLM_MODEL`). The prompt
    (`extract._PROMPT`) holds generic principles only: ignore quoted or forwarded text, store only
    durable explicit facts, decide whose fact it is, scope rules, sensitive data only on request.
-   It gets `KNOWN FACTS` (related values plus every active key) so a rephrased change reuses the
-   same key.
+   It gets `KNOWN FACTS` so a rephrased change reuses the same key: the newest 40 keys with their
+   current value cut to 40 chars, older keys without value, the whole block capped at 3500 chars.
+   Forgotten values are redacted.
 4. Each returned item is normalised (`snake_case` key, value up to 500 chars). `ephemeral` items
    are dropped, `retract` ends the active fact (`valid_to`), and values that match a forgotten value
    are skipped.
@@ -64,12 +64,11 @@ pass per user turn.
 `facts.upsert_fact` (under `BEGIN IMMEDIATE`, so two threads cannot both supersede):
 
 - Same key + scope (+ thread for session) with the same value (case-insensitive): no-op.
-- New value **and** the extractor set `"correction": true`: a new row is inserted, and the old row
-  keeps its value and gets `superseded_by` + `valid_to`. "What did I say before?" is answered from
-  this chain by the `get_fact_history` tool (status `current` / `superseded` / `retracted`).
-- New value **without** `correction: true`: the old fact is kept and the new one is rejected
-  (logged as "rejected overwrite"). This stops a mention of another person in a similar role from
-  overwriting the user's own fact.
+- The user's own fact restated with a new value: a new row is inserted, and the old row keeps its
+  value and gets `superseded_by` + `valid_to`. "What did I say before?" is answered from this chain
+  by the `get_fact_history` tool (status `current` / `superseded` / `retracted`).
+- A fact about another person never overwrites the user's fact; it is rejected (logged as
+  "rejected overwrite").
 
 ## Rolling summaries
 
@@ -87,25 +86,40 @@ runs an FTS5 query over `messages_fts`, ranked by `bm25`. Every term is a double
 current thread only, exclude the current turn, return 1-10 snippets with turn numbers, capped at
 2000 chars.
 
+**Auto-recall** ([`core.py`](https://github.com/marcotgs/simple-chatbot/blob/main/chatbot/core.py)):
+before each answer, the same search runs with the user's message over this thread's messages older
+than the 20-message window. Up to 3 hits, capped at 300 tokens, forgotten text redacted, are fenced
+as data in a `<recall>` block placed as a non-system message just before the newest user turn. The
+`search_history` tool stays available for anything recall misses.
+
 ## Document notes
 
 `summarize_doc(doc_id)` ([`doc_notes.py`](https://github.com/marcotgs/simple-chatbot/blob/main/chatbot/memory/doc_notes.py))
 makes one `doc_note` call per page and stores a page summary (at most 60 words) plus up to 15
-`key_fact` lines in `doc_notes`. Pages already noted for that user are skipped. Uncached pages run
+`key_fact` lines in `doc_notes`. Pages already noted in this thread are skipped. Uncached pages run
 in parallel on up to `DOC_NOTE_WORKERS` threads (default 4; `1` = one page after another); each
 `doc_note` call is capped at `DOC_NOTE_MAX_TOKENS` completion tokens (default 1000). If one page
 fails, the other pages are still saved and the first failure (in page order) is raised. The overview it returns is the stored
 notes (page summaries + key facts, capped at 6000 chars); there is no extra reduce call.
-`search_doc_notes` scores notes by query-word overlap (key facts first on ties). Re-uploading a
+`search_doc_notes` scores notes by query-word overlap (key facts first on ties). A variant doc id
+(case, extension, spaces or dashes) resolves to a doc noted in this thread; an unknown id searches
+the whole thread. Re-uploading a
 file under the same name deletes its old notes.
 
 ## Forget
 
 The `forget` tool ([`tools.py`](https://github.com/marcotgs/simple-chatbot/blob/main/chatbot/memory/tools.py))
 runs only when the latest user message (cut before any Slack file note) contains one of
-`forget|delete|erase|remove|wipe|purge` (a negation up to 3 words before the verb, such as "don't forget", "do not ever delete" or "I
-do not want you to delete", is removed first; a comma or period ends it) **and** the content words
-of the subject, in order and adjacent ("home page address" does not name "home address"). Otherwise it returns `error: not run`. Corrections never call it.
+`forget|delete|erase|remove|wipe|purge` (a negation up to 3 words before the verb, such as "don't
+forget", "do not ever delete" or "I do not want you to delete", is removed first; a comma or period
+ends it) **and** the user's own words name the fact:
+
+- the content words of the subject, in order, in the user's text; or
+- the user's words from the clause with the verb (the verb stripped) plus at most a couple of extra
+  words that all belong to one stored fact key ("Forget my address" names `home_address`).
+
+Anything wider returns `error: not run`. Corrections never call it. A deletion that resolves to no
+stored data deletes nothing.
 
 [`forget.forget`](https://github.com/marcotgs/simple-chatbot/blob/main/chatbot/memory/forget.py) then:
 

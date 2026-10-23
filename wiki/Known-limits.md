@@ -12,20 +12,21 @@ Accepted risks and open issues as of the current `main`. Each item names where i
   ([`doc_notes.py`](https://github.com/marcotgs/simple-chatbot/blob/main/chatbot/memory/doc_notes.py)).
   Run sequentially, an 18-page CSV took about 2-3 minutes in a live test. Pages now run on up to
   `DOC_NOTE_WORKERS` threads (default 4); the live time with threads is not re-measured. Pages
-  already noted are cached, so a second call is fast.
-- **Doc listing gap on a cache hit in a second thread.** The memory block lists only docs whose
-  notes were written in the current thread. A doc summarized in thread A and then again in thread B
-  is fully cached, so B gets no new rows and the doc is not listed in B. Search still works:
-  `search_doc_notes`, `list_docs` and `fetch_doc` are user-scoped
+  already noted in this thread are cached, so a second call in the same thread is fast.
+- **Re-noting a doc per thread.** Notes and `search_doc_notes` are per thread; `list_docs`,
+  `fetch_doc` and uploads stay per user. A doc summarized in thread A and then in thread B is noted
+  again in B: one `doc_note` call per page
   ([`doc_notes.py`](https://github.com/marcotgs/simple-chatbot/blob/main/chatbot/memory/doc_notes.py)).
 - Forget rewrites upload files in place. The filesystem may keep old blocks (no secure erase).
 
 ## Forget
 
 - **English-only cue.** The `forget` tool runs only when the user's message contains
-  `forget|delete|erase|remove|wipe|purge` and the subject's content words in order
+  `forget|delete|erase|remove|wipe|purge` and the user's own words name the fact: the subject's
+  content words in order, or the clause's words plus at most a couple of extra words from one stored
+  fact key
   ([`memory/tools.py`](https://github.com/marcotgs/simple-chatbot/blob/main/chatbot/memory/tools.py)).
-  A request in another language is refused.
+  A request in another language, or one wider than a single fact, is refused.
 - **Single owner, global tombstones.** Tombstones in `forgotten` are not per user: a value one user
   forgot is redacted for every user of the instance. Fine for the intended single-owner use, wrong
   for multiple users.
@@ -63,13 +64,25 @@ Accepted risks and open issues as of the current `main`. Each item names where i
 - Other observed flakes: a fact about a named child stored without the name in the value ("seven
   years old" instead of "<name>, seven years old"), and "in this chat, reply in bullet points"
   sometimes not stored.
-- The overwrite guard keeps the old fact when the extractor does not flag a change as
-  `"correction": true`. A real correction phrased vaguely can be dropped. The user can restate it
-  explicitly.
+- **Over-eager overwrite.** A user's own fact restated with a new value replaces the old one, so
+  the live risk is a wrong replace, not a dropped correction. The old value stays in fact history
+  (`get_fact_history`). Accepted residuals:
+  - A statement about a past or related thing (for example where you grew up) can replace a related
+    key about 1 time in 3.
+  - A third-party fact under a known key can still replace the user's value if the model misjudges
+    whose fact it is (SEC-S1). `get_fact_history` recovers it.
+  - Past 40 known facts, older keys are shown to the extractor without their value, so a change to
+    one of them is judged on the key alone.
 - **Jev gate on an alpha endpoint.** The salience gate calls OpenRouter's
   `/api/alpha/decisions` with `typesafe/jev-1.14`. An alpha API can change or disappear, and a
   silent model update can shift scores. The gate is fail-open, so errors cost money, not facts. A
   score shift could skip worthy turns: rerun `tests/test_gate_quality.py` after any change.
+
+## Tests
+
+- **Port collisions under WSL.** Local test servers bind port 0. With WSL mirrored or consomme
+  networking, that port can rarely collide with a Windows listener, and the test gets a 404 from a
+  foreign process. This is the environment, not the product: rerun the test.
 
 ## Slack
 

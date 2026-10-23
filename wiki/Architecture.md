@@ -84,7 +84,7 @@ Schema: [`chatbot/db.py`](https://github.com/marcotgs/simple-chatbot/blob/main/c
 | `messages` + `messages_fts` | Every user and assistant message with `turn_no`; FTS5 index kept in sync by triggers |
 | `facts` | `subject` (the key), `value`, `scope` (global/session/ephemeral), `superseded_by`, `valid_to`, `source_turn` |
 | `summaries` | One rolling summary per thread, `upto_turn` |
-| `doc_notes` | Per-page `summary` and `key_fact` rows per user and document |
+| `doc_notes` | Per-page `summary` and `key_fact` rows per user, thread and document |
 | `memory_cursor` | Last `turn_no` fed to the fact extractor, per thread |
 | `forgotten` | Forget tombstones: HMAC digest + token count, never plaintext |
 | `llm_calls` | One row per model call: purpose, model, estimated and provider tokens, `usage_missing`, `over_limit` |

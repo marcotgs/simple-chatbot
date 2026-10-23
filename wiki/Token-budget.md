@@ -65,7 +65,9 @@ every system text is merged into that one message.
 
 Other fixed caps keep tool output small: a tool result is truncated at 12000 chars
 (`MAX_TOOL_RESULT_CHARS`), `search_history` at 2000, `search_doc_notes` at 2500, a document
-overview at 6000, and the memory block at 3150 chars. Completions are capped only for
+overview at 6000, and the memory block at 3150 chars. The auto-recall block is at most 300 tokens
+and sits outside the system message (before the newest user turn); the extractor's known-facts
+block is at most 3500 chars. Completions are capped only for
 `doc_note` calls: `DOC_NOTE_MAX_TOKENS` (default 1000) output tokens per page.
 
 ## The call log
