@@ -57,6 +57,11 @@ RECALL_SNIP_CHARS = 200  # typed text of a user message with an upload note (no 
 # Stored text cannot open or close a tag in the block, also not as an HTML entity.
 _RECALL_INERT = str.maketrans({"<": "\u2039", ">": "\u203a", "&": "\uff06"})
 
+
+class _Recall(dict):
+    """The recall message: known by type set at insertion, never by content a user could type."""
+
+
 _LINKEDIN = re.compile(r"\blinked\s?in\b", re.I)
 _HASHTAG_LINE = re.compile(r"(?:#\w+[\s,]*)+")  # posts end in hashtags (linkedin.RULES)
 LINKEDIN_NUDGE = (
@@ -120,7 +125,7 @@ def build_context(user_id: str, thread_id: str, tools: list[dict] | None = None)
     recall = _recall_block(user_id, thread_id, rows)
     if recall:
         i = max((i for i, m in enumerate(history) if m["role"] == "user"), default=len(history))
-        history.insert(i, {"role": "user", "content": recall})
+        history.insert(i, _Recall(role="user", content=recall))
     return trim_to_budget([_system_message(user_id, thread_id), *history], tools=tools)
 
 
@@ -144,7 +149,8 @@ def _recall_block(user_id: str, thread_id: str, rows) -> str:
                 continue
             snip = typed[:RECALL_SNIP_CHARS]
         # Forget rewrites stored messages; redacting again covers values forgotten via another path.
-        text = memory.filter_reply(snip).translate(_RECALL_INERT)
+        # One line per hit: a stored newline cannot start a forged "- [turn N user]" line.
+        text = " ".join(memory.filter_reply(snip).split()).translate(_RECALL_INERT)
         line = f"- [turn {r['turn_no']} {r['role']}] {text}"
         block = "\n".join([RECALL_HEAD, *lines, line, "</recall>"])
         if llm.estimate_tokens([{"content": block}]) > RECALL_MAX_TOKENS:
@@ -217,7 +223,7 @@ def trim_to_budget(
 
 
 def _is_recall(m: dict) -> bool:
-    return m["role"] == "user" and (m.get("content") or "").startswith(RECALL_HEAD)
+    return isinstance(m, _Recall)
 
 
 def _shorten(m: dict) -> dict:
