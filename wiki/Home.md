@@ -18,8 +18,8 @@ What it does:
 - **Loads capabilities on demand** (documents, LinkedIn posts, messaging). Only a one-line index
   sits in the prompt.
 
-Stack: Python 3.11+, stdlib `sqlite3` (FTS5) and `http.server`, the `openai` SDK pointed at
-OpenRouter, `slack_bolt` (Socket Mode), `pypdf` for PDF uploads. See
+Stack: Python 3.11+, stdlib `sqlite3` (FTS5) and `http.server`, the official `openrouter` Python
+SDK, `slack_bolt` (Socket Mode), `pypdf` for PDF uploads. See
 [`pyproject.toml`](https://github.com/marcotgs/simple-chatbot/blob/main/pyproject.toml).
 
 ## Quick start (local)

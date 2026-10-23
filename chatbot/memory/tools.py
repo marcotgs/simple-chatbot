@@ -6,12 +6,22 @@ from chatbot import db, uploads
 from chatbot.memory import doc_notes, facts, forget, retrieval
 
 # forget is irreversible and model-triggered, so it runs only when the text the user typed in the
-# current message asks for it in words AND names the subject (at least one of its content words);
+# current message asks for it in words AND names the subject (its content words, in order and
+# adjacent);
 # a correction ("it is X, not Y") goes through extraction, keeping the old value.
 # ponytail: English keyword check; extend the verb list if other languages are needed.
 _FORGET_ASK = re.compile(r"\b(forget|delete|erase|remove|wipe|purge)\b", re.I)
+# A negation up to 4 words before the verb keeps the value ("I do not want you to delete X"),
+# and so does every verb chained to it ("don't forget or delete X"); only whitespace may separate
+# them, so a comma or period ends the negated clause.
+_VERB = r"(?:forget|delete|erase|remove|wipe|purge)"
 _NOT_FORGET = re.compile(
-    r"\b(don['’]?t|do not|never|not)\s+(forget|delete|erase|remove|wipe|purge)\b", re.I
+    r"(?:\b(?:not|never|no|dont|cant|wont)\b|n['’ʼ`]t\b)(?:\s+\w+){0,4}?\s+"
+    + _VERB
+    + r"\b(?:\s+(?:or|and|nor)\s+"
+    + _VERB
+    + r"\b)*",
+    re.I,
 )
 
 
@@ -50,9 +60,13 @@ def _forget(user_id, thread_id, subject):
         .fetchone()
     )
     typed = row["content"].split(uploads.NOTE_PREFIX, 1)[0] if row else ""
-    said = set(forget.content_words(typed))
+    said = forget.content_words(typed)
     want = forget.content_words(subject)
-    named = bool(want) and all(w in said for w in want)
+    # The subject's content words as one run of the typed ones ("home page address" does not
+    # name "home address", R5-SEC-S1).
+    named = bool(want) and any(
+        said[i : i + len(want)] == want for i in range(len(said) - len(want) + 1)
+    )
     if not named or not _FORGET_ASK.search(_NOT_FORGET.sub("", typed)):
         return (
             "error: not run. forget only runs when the user's current message explicitly asks to "

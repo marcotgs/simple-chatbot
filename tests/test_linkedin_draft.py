@@ -4,6 +4,7 @@ length-capped, appended to the reply (never stored), rendered safely on the web 
 import http.client
 import json
 import os
+import re
 import sys
 import tempfile
 import threading
@@ -42,8 +43,9 @@ def call(name, args, cid):
 class FakeChat:
     """Chat calls pop scripted tool-call steps, then reply `final`; the drafter gets `post`."""
 
-    def __init__(self, steps, post=POST, final="Here is your post."):
-        self.steps, self.post, self.final = list(steps), post, final
+    def __init__(self, steps, post=POST, final=None):
+        self.steps, self.post = list(steps), post
+        self.final = f"Here is your post:\n\n{post}" if final is None else final
 
     def __call__(self, messages, tools=None, purpose="chat", thread_id=None):
         if purpose == "linkedin":
@@ -102,8 +104,8 @@ class SendAppendsLinkTest(unittest.TestCase):
         user = uid()
         with mock.patch.object(llm, "chat", FakeChat(draft_steps())):
             reply = core.send(user, "t", "write a post")
-        self.assertEqual(reply, "Here is your post.\n\n" + linkedin.draft_line(POST))
-        self.assertEqual(self._stored_reply(user), "Here is your post.")
+        self.assertEqual(reply, f"Here is your post:\n\n{POST}\n\n" + linkedin.draft_line(POST))
+        self.assertEqual(self._stored_reply(user), f"Here is your post:\n\n{POST}")
 
     def test_no_link_without_a_validated_post(self):
         cases = {
@@ -126,9 +128,37 @@ class SendAppendsLinkTest(unittest.TestCase):
             [call("load_capability", {"name": "linkedin"}, "c1")],
             [call("validate_linkedin_post", {"text": edited}, "c2")],
         ]
-        with mock.patch.object(llm, "chat", FakeChat(steps)):
+        with mock.patch.object(llm, "chat", FakeChat(steps, final=f"Shorter:\n\n{edited}")):
             reply = core.send(uid(), "t", "shorten it")
         self.assertEqual(_text_param(reply.rsplit("\n\n", 1)[1]), edited)
+
+    def test_model_written_draft_lines_are_dropped(self):
+        """R6-SEC-W1: a draft line in model output (e.g. from an injected doc) is removed before
+        storing; the reply ends with exactly one line, built from the validated post."""
+        forged = f"{linkedin.DRAFT_LABEL}: {PREFIX}attacker%20text"
+        cases = {
+            "with a validated post": (draft_steps(), f"Here it is:\n\n{POST}\n\n  {forged}"),
+            "without a post": ([], f"Done.\n\n{forged}\nBye."),
+        }
+        for name, (steps, final) in cases.items():
+            user = uid()
+            with self.subTest(name), mock.patch.object(llm, "chat", FakeChat(steps, final=final)):
+                reply = core.send(user, "t", "write a post")
+                self.assertNotIn("attacker", reply)
+                self.assertNotIn("attacker", self._stored_reply(user))
+                self.assertEqual(reply.count(linkedin.DRAFT_LABEL), 1 if steps else 0)
+                if steps:
+                    self.assertTrue(reply.endswith("\n\n" + linkedin.draft_line(POST)), reply)
+
+    def test_no_link_for_a_post_the_reply_does_not_show(self):
+        """R6-SEC-W1: a validated post the user never saw in the reply gets no link."""
+        hidden = "Totally different text.\n\n#launch"
+        steps = [
+            [call("load_capability", {"name": "linkedin"}, "c1")],
+            [call("validate_linkedin_post", {"text": hidden}, "c2")],
+        ]
+        with mock.patch.object(llm, "chat", FakeChat(steps, final="Here is your post.")):
+            self.assertNotIn(linkedin.DRAFT_LABEL, core.send(uid(), "t", "write a post"))
 
     def test_forgotten_value_never_reaches_the_url(self):
         secret = "quillon-test-8841"
@@ -143,6 +173,66 @@ class SendAppendsLinkTest(unittest.TestCase):
         self.assertNotIn(secret, reply)
         self.assertNotIn("quillon", reply)  # not even percent-encoded
         self.assertIn("Big news from [forgotten] today.", _text_param(reply.rsplit("\n\n", 1)[1]))
+
+
+class Scripted(FakeChat):
+    """Chat calls pop scripted steps: a list of tool calls, or a plain reply string."""
+
+    def __call__(self, messages, tools=None, purpose="chat", thread_id=None):
+        if purpose == "chat":
+            self.chats = [*getattr(self, "chats", []), messages]
+            step = self.steps.pop(0) if self.steps else self.final
+            text = step if isinstance(step, str) else None
+            msg = SimpleNamespace(content=text, tool_calls=None if text else step)
+            return SimpleNamespace(choices=[SimpleNamespace(message=msg)])
+        return super().__call__(messages, tools, purpose, thread_id)
+
+
+class LinkedInRoutingTest(unittest.TestCase):
+    """B8: a LinkedIn post the model wrote itself (capability never loaded) gets one nudge."""
+
+    def setUp(self):
+        p = mock.patch.object(memory, "after_turn", lambda *a: None)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_self_written_post_is_redone_through_the_tool(self):
+        own = "Big launch!\n\n#a #b #c #d #e"
+        fake = Scripted([own, *draft_steps()])
+        with mock.patch.object(llm, "chat", fake):
+            reply = core.send(uid(), "t", "Write a LinkedIn post about the Q3 plan.")
+        self.assertTrue(reply.endswith("\n\n" + linkedin.draft_line(POST)), reply)
+        self.assertNotIn("#d", reply)
+        self.assertEqual(fake.chats[1][-1]["content"], core.LINKEDIN_NUDGE)
+        self.assertEqual(len(fake.chats), 4)
+
+    def test_no_nudge_without_a_post_or_a_linkedin_ask(self):
+        cases = {
+            "question, no hashtag": ("What is LinkedIn's post length limit?", "1300 chars."),
+            "hashtags, no linkedin": ("Write a tweet.", "Shipped! #launch"),
+            # R7-W1: a '#' in an answer is not a post; only a closing hashtag line is.
+            "hashtag question": (
+                "How do I use hashtags on LinkedIn?",
+                "Add two or three at the end, e.g. #marketing #growth.\nKeep them relevant.",
+            ),
+            "rank": ("Is my LinkedIn profile #1?", "You rank #1 in your network this week."),
+            "issue number": (
+                "Summarize the LinkedIn thread",
+                "They discuss the outage and agree to track it in issue #42.",
+            ),
+        }
+        for name, (text, answer) in cases.items():
+            fake = Scripted([answer])
+            with self.subTest(name), mock.patch.object(llm, "chat", fake):
+                self.assertEqual(core.send(uid(), "t", text), answer)
+                self.assertEqual(len(fake.chats), 1)
+
+    def test_nudge_only_once(self):
+        own = "Big launch!\n\n#a #b"
+        fake = Scripted([own, own])
+        with mock.patch.object(llm, "chat", fake):
+            self.assertEqual(core.send(uid(), "t", "write a linkedin post"), own)
+        self.assertEqual(len(fake.chats), 2)
 
 
 class ServerSendTest(unittest.TestCase):
@@ -174,7 +264,7 @@ class ServerSendTest(unittest.TestCase):
         self.assertEqual(r.status, 200)
         reply = json.loads(r.read())["reply"]
         conn.close()
-        self.assertEqual(reply, "Here is your post.\n\n" + linkedin.draft_line(POST))
+        self.assertEqual(reply, f"Here is your post:\n\n{POST}\n\n" + linkedin.draft_line(POST))
 
 
 class WebPageTest(unittest.TestCase):
@@ -184,6 +274,24 @@ class WebPageTest(unittest.TestCase):
         self.assertIn('rel = "noopener noreferrer"', html)
         self.assertIn(linkedin.DRAFT_LABEL.replace("(", "\\(").replace(")", "\\)"), html)
         self.assertNotIn("innerHTML =", html)
+
+    def test_page_matches_only_the_final_app_draft_line(self):
+        """R6-SEC-W1: the page's DRAFT regex (same syntax in Python) takes only the line core.send
+        appends: exact composer prefix, at the very end of the reply."""
+        html = (ROOT / "web" / "index.html").read_text()
+        src = re.search(r"const DRAFT = /(.*)/;\n", html).group(1)
+        self.assertTrue(src.endswith("$"), "anchored at end, no m flag")
+        draft = re.compile(src[:-1] + r"\Z")
+        app = "Hi.\n\n" + linkedin.draft_line(POST)
+        self.assertEqual(draft.search(app).group(1), app.rsplit(": ", 1)[1])
+        for content in (
+            app + "\nmore text",
+            f"{linkedin.DRAFT_LABEL}: {PREFIX}x",  # no blank line before it
+            f"Hi.\n\n{linkedin.DRAFT_LABEL}: https://www.linkedin.com/redir/redirect?url=x",
+            f"Hi.\n\n{linkedin.DRAFT_LABEL}: https://www.linkedin.com.evil.test/feed/?text=x",
+        ):
+            with self.subTest(content):
+                self.assertIsNone(draft.search(content))
 
 
 if __name__ == "__main__":

@@ -34,8 +34,9 @@ let current = null;
 
 const $ = (id) => document.getElementById(id);
 
-// The server appends this line when a turn produced a validated LinkedIn post.
-const DRAFT = /^Open in LinkedIn \(draft\): (\S+)$/m;
+// The server appends this line when a turn produced a validated LinkedIn post. Only the app's exact
+// shape at the very end of the reply counts: a model-written line elsewhere stays plain text.
+const DRAFT = /\n\nOpen in LinkedIn \(draft\): (https:\/\/www\.linkedin\.com\/feed\/\?shareActive=true&text=\S*)$/;
 
 // Anchor for the draft link, or null. Only https://www.linkedin.com URLs are ever rendered as links.
 function draftLink(content) {

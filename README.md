@@ -4,7 +4,7 @@ A personal assistant for one user with a single entry point, `core.send(user_id,
 A web chat page, a curl-able JSON API, a Slack bot (DM, `/bot`, @mention, file upload) and the
 scenario runner all call it. It keeps long-term memory in SQLite: facts with scope and history,
 rolling chat summaries, full-text search over old messages, notes on long documents, and a `forget`
-that purges a value from every store. Every model call (OpenRouter, OpenAI-compatible) stays under
+that purges a value from every store. Every model call (OpenRouter, via its official `openrouter` Python SDK) stays under
 a configurable input-token limit, and each call's provider-reported usage is logged.
 
 More detail lives in the wiki: <https://github.com/marcotgs/simple-chatbot/wiki>
@@ -113,7 +113,7 @@ tells the model to load it first.
 | --- | --- | --- |
 | `docs` | `list_docs`, `fetch_doc(doc_id, page)` | Seeded `docs/*.md` plus the user's own Slack uploads. One bounded page per call (~2800 estimated tokens, max 10,000 chars). |
 | `messaging` | `send_message(to, text)` | Logs to table `send_log` only; nothing is delivered. Refuses text or recipient containing a forgotten value. |
-| `linkedin` | `write_linkedin_post`, `validate_linkedin_post` | Deterministic checker: max 1300 chars, max 3 hashtags all at the end, no links (http(s), www., markdown links, bare domains). The drafting loop regenerates up to 3 times after the first draft and returns only a passing post, or an error. Nothing is posted: see the draft link below. |
+| `linkedin` | `write_linkedin_post`, `validate_linkedin_post` | Deterministic checker: max 1300 chars, max 3 hashtags all at the end, no links (http(s), www., markdown links, bare domains). The drafting loop regenerates up to 3 times after the first draft and returns only a passing post, or an error. With `source_doc_id` the drafter also gets the doc's key facts (relevant ones first, every page covered); a doc with no notes is noted first, and no facts means an error instead of a post. Nothing is posted: see the draft link below. |
 
 **LinkedIn draft link.** When a turn produced a post that passed the checker, `core.send` appends
 one line to the reply: `Open in LinkedIn (draft): <url>`. The code builds the URL from the validated
@@ -122,7 +122,8 @@ model; a forgotten value in the post is redacted first. The line is added after 
 stored, so it is not in `messages` or `/history` (a reloaded page does not show it). Opening it
 shows LinkedIn's composer with the post as a draft, if you are logged in; nothing is posted. The
 web page shows it as a link that opens a LinkedIn tab and copies the post to the clipboard; Slack
-shows a clickable link. If the URL would exceed 2000 chars the line says to copy the text above
+shows a clickable link. Only that last line counts: draft lines the model writes itself are
+removed, and no link is added unless the reply shows the validated post. If the URL would exceed 2000 chars the line says to copy the text above
 instead. LinkedIn's `text` parameter is not documented and may be ignored: then paste the post
 from the clipboard (web) or copy it from the reply.
 
@@ -203,15 +204,15 @@ summary roll; a memory failure is logged and never breaks the reply.
   (one bounded call per page, cached per page), stores a summary and key facts (dates, owners) per
   page and returns an overview. Uncached pages are noted in parallel by up to `DOC_NOTE_WORKERS`
   threads (default 4; `1` = one after another), each call capped at `DOC_NOTE_MAX_TOKENS`
-  completion tokens (default 500). If a page fails, the other pages are still saved and the error
+  completion tokens (default 1000). If a page fails, the other pages are still saved and the error
   is raised. `search_doc_notes` answers later questions from the notes.
-- **The `<memory>` block**: current global facts, this thread's session facts, docs noted in this
-  thread (doc tools and `search_doc_notes` still see all of the user's docs and uploads) and the
+- **The `<memory>` block**: current global facts, this thread's session facts, docs whose notes
+  were written in this thread (doc tools and `search_doc_notes` still see all of the user's docs and uploads) and the
   summary tail go into the system message, capped at ~900 tokens and fenced as data, not
   instructions.
 - **Forget** (`forget.py`, tool `forget`): runs only when the user's typed message asks to forget,
-  delete, erase, remove, wipe or purge AND names every content word of the subject (not on "don't
-  forget", not on corrections). It deletes matching fact rows, redacts the value in messages
+  delete, erase, remove, wipe or purge AND names the subject's content words in order (not on "don't
+  forget" or "do not ever delete", not on corrections). It deletes matching fact rows, redacts the value in messages
   (+ FTS), summaries, doc notes, `send_log` and uploaded files (renaming uploads whose name holds it),
   runs `VACUUM` + WAL checkpoint, then `verify_clean` scans all tables, FTS vocabulary and upload
   files and reports "verified clean" or the traces left. It stores an HMAC tombstone (key
@@ -235,6 +236,7 @@ Socket Mode (outbound websocket, no public URL). Setup steps, scopes and trouble
   sees them).
 - Files in the DM: `.txt`, `.md`, `.csv`, `.json` and `.pdf` (text via `pypdf`) are stored as
   extracted text under `data/uploads/<user>/` and become docs for `fetch_doc` / `summarize_doc`.
+  A CSV (or other delimited table) split over several pages repeats its header row on each page.
   Downloads only from Slack hosts with the bot token. Needs the `files:read` scope.
 - Acks: once an event passes dedupe and the owner check, the bot posts
   `:hourglass_flowing_sand: Working on it…` (or `Reading your file…` for a file share) before the
@@ -309,7 +311,7 @@ Copy `.env.example` to `.env`. Real environment variables win over `.env`.
 | `SLACK_USER_ID` | (empty) | no | Owner's Slack member ID; everyone else is refused |
 | `MAX_FILE_BYTES` | `0` (unlimited) | no | Largest Slack file the bot downloads |
 | `DOC_NOTE_WORKERS` | `4` | no | Parallel page-note calls in `summarize_doc`; `1` = sequential |
-| `DOC_NOTE_MAX_TOKENS` | `500` | no | Completion token cap per page-note call |
+| `DOC_NOTE_MAX_TOKENS` | `1000` | no | Completion token cap per page-note call |
 | `RUN_LIVE_TESTS` | (unset) | no | `1` enables the live test suites (not in `.env.example`) |
 
 ## Deploy
@@ -323,7 +325,8 @@ local server, not a deployment setup.
 - **No upload size cap by default.** `MAX_FILE_BYTES=0` means unlimited; a big file means memory
   use and many `summarize_doc` calls. Slack's own limit is the only ceiling unless you set it.
 - **English-only forget cue.** The forget guard looks for English verbs (forget, delete, erase,
-  remove, wipe, purge); a request in another language is refused.
+  remove, wipe, purge); a request in another language is refused. A negation split off by a comma
+  ("Do NOT, under any circumstances, delete ...") is not seen by the guard.
 - **Global tombstones.** Tombstones are not per user: a value forgotten by one user is redacted for
   every user. Fine for the single-owner use this is built for.
 - **Estimator undercounts CJK.** The two-class estimator treats CJK characters as letters
@@ -335,6 +338,9 @@ local server, not a deployment setup.
   0.86 (recall 1.00): a temporary arrangement ("while X is on holiday, I ...") is sometimes stored
   as a session fact. A few other rows flake between runs (a fact value without the person's name,
   a fact not stored).
+- **Doc listing gap on a cache hit.** The memory block lists docs whose notes were written in this
+  thread. A doc already summarized in another thread is fully cached, so summarizing it again
+  writes no rows here and it is not listed in this thread; `search_doc_notes` still finds it.
 - **Slack live path not tested automatically.** Slack handlers are tested offline with fakes; the
   real Socket Mode round-trip (DM, `/bot`, @mention, files) is only checked by hand.
 

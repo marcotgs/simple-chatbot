@@ -16,8 +16,9 @@ builds one block, capped at `CONTEXT_MAX_CHARS = 3150` (about 900 tokens), fence
    bites, preference-like keys (`pref*`, `style`, `tone`, `spelling`, `language`, `format`, ...)
    win, then the oldest keys. Keys that did not fit are named, with a pointer to
    `get_fact_history`.
-2. "Documents with saved notes": docs noted in **this** thread (up to 10, newest first). Docs
-   noted in other threads are not listed here, but `search_doc_notes`, `list_docs` and
+2. "Documents with saved notes": docs whose notes were written in **this** thread (up to 10,
+   newest first). Docs noted in other threads are not listed here, even after a cached
+   `summarize_doc` call in this thread (it writes no new rows), but `search_doc_notes`, `list_docs` and
    `fetch_doc` stay user-scoped, and uploads belong to the user, not the thread.
 3. The tail of this chat's rolling summary, if room is left.
 
@@ -92,7 +93,7 @@ current thread only, exclude the current turn, return 1-10 snippets with turn nu
 makes one `doc_note` call per page and stores a page summary (at most 60 words) plus up to 15
 `key_fact` lines in `doc_notes`. Pages already noted for that user are skipped. Uncached pages run
 in parallel on up to `DOC_NOTE_WORKERS` threads (default 4; `1` = one page after another); each
-`doc_note` call is capped at `DOC_NOTE_MAX_TOKENS` completion tokens (default 500). If one page
+`doc_note` call is capped at `DOC_NOTE_MAX_TOKENS` completion tokens (default 1000). If one page
 fails, the other pages are still saved and the first failure (in page order) is raised. The overview it returns is the stored
 notes (page summaries + key facts, capped at 6000 chars); there is no extra reduce call.
 `search_doc_notes` scores notes by query-word overlap (key facts first on ties). Re-uploading a
@@ -102,9 +103,9 @@ file under the same name deletes its old notes.
 
 The `forget` tool ([`tools.py`](https://github.com/marcotgs/simple-chatbot/blob/main/chatbot/memory/tools.py))
 runs only when the latest user message (cut before any Slack file note) contains one of
-`forget|delete|erase|remove|wipe|purge` (negated verbs such as "don't forget" or "do not
-delete", straight or curly apostrophe, removed first) **and** every content
-word of the subject. Otherwise it returns `error: not run`. Corrections never call it.
+`forget|delete|erase|remove|wipe|purge` (a negation up to 3 words before the verb, such as "don't forget", "do not ever delete" or "I
+do not want you to delete", is removed first; a comma or period ends it) **and** the content words
+of the subject, in order and adjacent ("home page address" does not name "home address"). Otherwise it returns `error: not run`. Corrections never call it.
 
 [`forget.forget`](https://github.com/marcotgs/simple-chatbot/blob/main/chatbot/memory/forget.py) then:
 

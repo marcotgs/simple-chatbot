@@ -84,6 +84,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         url = urlparse(self.path)
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = -1  # answered 400 below, after the guards
+        # Read the (bounded) body before any refusal: closing a socket with unread request bytes
+        # sends a TCP RST, and the client can lose the 403/415 answer (RemoteDisconnected).
+        raw = self.rfile.read(length) if 0 < length <= MAX_BODY else b""
         if not self._same_origin() or not self._authorized(url):
             return
         if url.path != "/send":
@@ -92,11 +99,10 @@ class Handler(BaseHTTPRequestHandler):
         # headers, ever.
         if self.headers.get("Content-Type", "").split(";")[0].strip().lower() != "application/json":
             return self._json(415, {"error": "Content-Type must be application/json"})
-        length = int(self.headers.get("Content-Length") or 0)
         if length <= 0 or length > MAX_BODY:
             return self._json(413 if length > MAX_BODY else 400, {"error": "bad body size"})
         try:
-            body = json.loads(self.rfile.read(length))
+            body = json.loads(raw)
             thread_id = str(body["thread_id"]).strip()
             text = str(body["text"])
             user_id = str(body.get("user_id") or DEFAULT_USER)

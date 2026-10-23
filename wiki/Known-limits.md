@@ -13,12 +13,17 @@ Accepted risks and open issues as of the current `main`. Each item names where i
   Run sequentially, an 18-page CSV took about 2-3 minutes in a live test. Pages now run on up to
   `DOC_NOTE_WORKERS` threads (default 4); the live time with threads is not re-measured. Pages
   already noted are cached, so a second call is fast.
+- **Doc listing gap on a cache hit in a second thread.** The memory block lists only docs whose
+  notes were written in the current thread. A doc summarized in thread A and then again in thread B
+  is fully cached, so B gets no new rows and the doc is not listed in B. Search still works:
+  `search_doc_notes`, `list_docs` and `fetch_doc` are user-scoped
+  ([`doc_notes.py`](https://github.com/marcotgs/simple-chatbot/blob/main/chatbot/memory/doc_notes.py)).
 - Forget rewrites upload files in place. The filesystem may keep old blocks (no secure erase).
 
 ## Forget
 
 - **English-only cue.** The `forget` tool runs only when the user's message contains
-  `forget|delete|erase|remove|wipe|purge` and every content word of the subject
+  `forget|delete|erase|remove|wipe|purge` and the subject's content words in order
   ([`memory/tools.py`](https://github.com/marcotgs/simple-chatbot/blob/main/chatbot/memory/tools.py)).
   A request in another language is refused.
 - **Single owner, global tombstones.** Tombstones in `forgotten` are not per user: a value one user
@@ -31,10 +36,11 @@ Accepted risks and open issues as of the current `main`. Each item names where i
   Street" in unrelated text.
 - `verify_clean` can report a false WARNING when the words of a value (dates, common words) still
   appear separately in the FTS vocabulary.
-- Subject binding is a bag of words: "remove the home page address from the doc" with subject
-  `home address` passes the guard and deletes `home_address` (open review finding R5-SEC-S1).
 - Subjects whose words are all 2 characters or shorter ("forget my IP") are always refused, because
   `content_words` drops them. Fail-closed (R5-SEC-S4).
+- **Negation split off by a comma is not seen.** The guard treats "don't (… up to 4 words) delete"
+  as a keep-it request, but a comma ends the clause: "Do NOT, under any circumstances, delete my
+  home address" still passes the guard, and the model decides (R7-SEC-W1).
 - Copies outside the app are out of reach: backups of the `data/` folder you made yourself and
   OpenRouter retention.
 
@@ -75,8 +81,22 @@ Accepted risks and open issues as of the current `main`. Each item names where i
 
 ## Other
 
+- **LinkedIn nudge is a heuristic.** When the user mentions LinkedIn, `linkedin` is not loaded and
+  the reply ends in a hashtag line, `core.run_tool_loop` asks the model once to redo the reply
+  through `write_linkedin_post`
+  ([`core.py`](https://github.com/marcotgs/simple-chatbot/blob/main/chatbot/core.py)). An answer
+  that ends in a line of example hashtags costs one extra call; the nudge tells the model to resend
+  a non-post reply unchanged.
+
 - One process by design: one SQLite file in `data/` (`DB_PATH`), in-memory locks and Slack dedupe.
   Do not run two instances on the same database.
 - Documents in `docs/` and uploads are summarized into `doc_notes` and replayed later, so a
   hostile document is a stored prompt-injection channel. Keep `docs/` to trusted files.
 - Per-thread locks in `core.py` are never evicted (fine for one user).
+- Model calls ([`llm.py`](https://github.com/marcotgs/simple-chatbot/blob/main/chatbot/llm.py))
+  time out after 60 s per attempt. 408, 429, 5XX and connection errors are retried with backoff
+  for up to 15 s (0.5 to 4 s apart), so a timed-out attempt is final. `Retry-After` is ignored:
+  an hour-long value would park a thread for that hour.
+- Model calls trust the pinned `certifi` CA bundle, not the OS store, unless `SSL_CERT_FILE` or
+  `SSL_CERT_DIR` is set. Behind a TLS-inspecting proxy, chat fails closed with a TLS error while
+  the salience gate (stdlib `urllib`, OS store) still works. Point `SSL_CERT_FILE` at the proxy CA.

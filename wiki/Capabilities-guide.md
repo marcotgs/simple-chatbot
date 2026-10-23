@@ -31,7 +31,7 @@ Built-in capabilities:
 | Capability | File | Tools | Notes |
 | --- | --- | --- | --- |
 | `docs` | [`docs.py`](https://github.com/marcotgs/simple-chatbot/blob/main/chatbot/capabilities/docs.py) | `list_docs`, `fetch_doc` | One bounded page per call (`PAGE_TOKENS = 2800`). Whitelist: `docs/*.md` (not `_`-prefixed) plus the user's own Slack uploads (`upload-*`) |
-| `linkedin` | [`linkedin.py`](https://github.com/marcotgs/simple-chatbot/blob/main/chatbot/capabilities/linkedin.py) | `write_linkedin_post`, `validate_linkedin_post` | Deterministic checker: at most 1300 chars, at most 3 hashtags all at the end, no links. The drafter regenerates up to 3 times with the violations. Nothing is posted; a passing post gets a draft link (below) |
+| `linkedin` | [`linkedin.py`](https://github.com/marcotgs/simple-chatbot/blob/main/chatbot/capabilities/linkedin.py) | `write_linkedin_post`, `validate_linkedin_post` | Deterministic checker: at most 1300 chars, at most 3 hashtags all at the end, no links. The drafter regenerates up to 3 times with the violations. With `source_doc_id` it also gets the doc's key facts (relevant ones first, every page covered; an un-noted doc is noted first; no facts = error). Nothing is posted; a passing post gets a draft link (below) |
 | `messaging` | [`messaging.py`](https://github.com/marcotgs/simple-chatbot/blob/main/chatbot/capabilities/messaging.py) | `send_message` | Writes to `send_log`, delivers nothing. Refuses text holding a forgotten value |
 
 ### LinkedIn draft link
@@ -40,12 +40,13 @@ When a turn produced a post that passed the checker, `core.send` appends one lin
 `Open in LinkedIn (draft): https://www.linkedin.com/feed/?shareActive=true&text=<percent-encoded post>`.
 
 - Built in code (`linkedin.draft_line`) from the validated post, never by the model. A forgotten
-  value in the post is redacted before encoding.
+  value in the post is redacted before encoding. Draft lines the model writes itself are removed,
+  and no link is added unless the reply shows the validated post.
 - Added after the reply is stored: it is not in `messages`, `/history` or search, so a reloaded
   web page does not show it.
 - Opening it shows LinkedIn's composer with the post as a draft (you must be logged in). Nothing is
   posted.
-- Web page: rendered as a link (only `https://www.linkedin.com` URLs) that opens a LinkedIn tab and
+- Web page: rendered as a link (only the exact composer URL on the last line of the reply) that opens a LinkedIn tab and
   copies the post to the clipboard. Slack: a clickable `Open in LinkedIn (draft)` link.
 - If the URL would exceed 2000 chars, the line says to copy the text above instead.
 - LinkedIn's `text` parameter is not documented and may be ignored. Then paste the post from the

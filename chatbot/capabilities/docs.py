@@ -45,6 +45,21 @@ def _tokens(text: str) -> int:
     return llm.estimate_tokens([{"content": text}]) - llm.PER_MESSAGE_OVERHEAD
 
 
+def _table_header(para: str, page_chars: int, page_tokens: int) -> str:
+    """First line + newline of a delimited table (CSV/TSV/;/|: first two lines hold the same
+    delimiter count), or "" for anything else or a header too big to repeat."""
+    lines = para.split("\n", 2)
+    if len(lines) < 3:
+        return ""
+    head = lines[0] + "\n"
+    if len(head) > page_chars // 10 or _tokens(head) > page_tokens // 10:
+        return ""
+    for d in (",", "\t", ";", "|"):
+        if lines[0].count(d) and lines[0].count(d) == lines[1].count(d):
+            return head
+    return ""
+
+
 def _fit(para: str, page_chars: int, page_tokens: int) -> int:
     """Longest prefix within both caps, cut after its last line break if it has one (CSV rows
     stay whole)."""
@@ -61,13 +76,17 @@ def paginate(text: str, page_chars: int = PAGE_CHARS, page_tokens: int = PAGE_TO
     within page_chars and page_tokens (llm.estimate_tokens)."""
     pages, cur, cur_tokens = [], "", 0
     for para in text.split("\n\n"):
-        while len(para) > page_chars or _tokens(para) > page_tokens:
+        head = _table_header(para, page_chars, page_tokens)
+        lead = ""  # the table header, repeated atop each continuation page (B7)
+        while len(lead + para) > page_chars or _tokens(lead + para) > page_tokens:
             if cur:
                 pages.append(cur)
                 cur, cur_tokens = "", 0
-            n = _fit(para, page_chars, page_tokens)
-            pages.append(para[:n])
-            para = para[n:]
+            # -1: the estimate of a concatenation can round one token above the sum of its parts
+            n = _fit(para, page_chars - len(lead), page_tokens - _tokens(lead) - bool(lead))
+            pages.append(lead + para[:n])
+            para, lead = para[n:], head
+        para = lead + para if para else para
         tokens = _tokens(para) + 1  # +1: the "\n\n" separator and the estimate's rounding
         if cur and (len(cur) + 2 + len(para) > page_chars or cur_tokens + tokens > page_tokens):
             pages.append(cur)

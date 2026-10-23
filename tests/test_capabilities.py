@@ -62,7 +62,7 @@ class LinkedInCheckerTest(unittest.TestCase):
 class FakeClient:
     def __init__(self, replies):
         self.replies, self.calls = list(replies), []
-        self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
+        self.chat = SimpleNamespace(send=self._create)
 
     def _create(self, **kw):
         self.calls.append(kw)
@@ -96,15 +96,20 @@ class LinkedInGenerateTest(unittest.TestCase):
         self.assertEqual(llm._client.calls, [])
 
     def test_source_doc_facts_are_only_the_callers(self):
+        # Every page of a real doc is noted for the owner, so the drafter is the only LLM call.
+        rows = [
+            ("li-owner", p, "key_fact", f"owner fact p{p}: launch 2026-09-17")
+            for p in range(1, docs.page_count("Q3-plan") + 1)
+        ]
         c = db.conn()
         with c:
-            c.execute(
-                "INSERT INTO doc_notes (user_id, doc_id, page, kind, content) VALUES"
-                " ('li-owner', 'li-doc', 1, 'key_fact', 'owner fact: launch 2026-09-17'),"
-                " ('li-other', 'li-doc', 1, 'key_fact', 'other user secret fact')"
+            c.executemany(
+                "INSERT INTO doc_notes (user_id, doc_id, page, kind, content)"
+                " VALUES (?, 'Q3-plan', ?, ?, ?)",
+                [*rows, ("li-other", 1, "key_fact", "other user secret fact")],
             )
         llm._client = FakeClient([CLEAN])
-        self.assertEqual(linkedin.write_linkedin_post("li-owner", "t1", "launch", "li-doc"), CLEAN)
+        self.assertEqual(linkedin.write_linkedin_post("li-owner", "t1", "launch", "Q3-plan"), CLEAN)
         prompt = llm._client.calls[0]["messages"][-1]["content"]
         self.assertIn("owner fact", prompt)
         self.assertNotIn("other user", prompt)
@@ -118,6 +123,99 @@ class LinkedInGenerateTest(unittest.TestCase):
                 " ('li-x', 'thread-a', 'li-doc2', 1, 'key_fact', 'noted in thread A')"
             )
         self.assertIn("noted in thread A", linkedin._doc_key_facts("li-x", "li-doc2"))
+
+
+class LinkedInDocFactsTest(unittest.TestCase):
+    """B9: the drafter gets facts from every page, the relevant ones first, and never drafts a
+    doc post without facts."""
+
+    def test_facts_cover_every_page_and_put_the_relevant_one_first(self):
+        user = "li-b9-seeded"
+        rows = [
+            (user, "li-b9", page, "key_fact", f"p{page} metric {i}: {page * 100 + i} units")
+            for page in range(1, 13)
+            for i in range(15)
+        ]
+        rows[5 * 15 + 14] = (user, "li-b9", 6, "key_fact", "Public launch date: 2026-09-17")
+        c = db.conn()
+        with c:
+            c.executemany(
+                "INSERT INTO doc_notes (user_id, doc_id, page, kind, content)"
+                " VALUES (?, ?, ?, ?, ?)",
+                rows,
+            )
+        facts = linkedin._doc_key_facts(user, "li-b9", "post about the public launch")
+        self.assertTrue(facts.startswith("- Public launch date: 2026-09-17"), facts[:200])
+        for page in range(1, 13):
+            self.assertIn(f"- p{page} metric 0:", facts)
+        self.assertLessEqual(len(facts), linkedin.MAX_FACTS_CHARS)
+        self.assertTrue(all(line.startswith("- ") for line in facts.split("\n")))  # whole lines
+
+    def _fake_chat(self, note):
+        calls = []
+
+        def chat(messages, tools=None, purpose="chat", thread_id=None, **_):
+            calls.append(purpose)
+            if purpose == "doc_note":
+                page = messages[-1]["content"].split("PAGE ", 1)[1].split(":", 1)[0]
+                content = note(page)
+            else:
+                content = CLEAN
+            msg = SimpleNamespace(content=content, tool_calls=None)
+            return SimpleNamespace(choices=[SimpleNamespace(message=msg)])
+
+        chat.calls = calls
+        return chat
+
+    def test_unnoted_doc_is_noted_before_drafting(self):
+        fake = self._fake_chat(
+            lambda page: json.dumps({"summary": "s", "key_facts": [f"fact from page {page}"]})
+        )
+        with mock.patch.object(llm, "chat", fake):
+            out = linkedin.write_linkedin_post("li-b9-fresh", "t1", "launch post", "Q3-plan")
+        self.assertEqual(out, CLEAN)
+        pages = docs.page_count("Q3-plan")
+        self.assertEqual(fake.calls, ["doc_note"] * pages + ["linkedin"])
+        self.assertEqual(
+            len(
+                db.conn()
+                .execute(
+                    "SELECT DISTINCT page FROM doc_notes WHERE user_id = 'li-b9-fresh'"
+                    " AND doc_id = 'Q3-plan'"
+                )
+                .fetchall()
+            ),
+            pages,
+        )
+
+    def test_partly_noted_doc_gets_its_missing_pages_noted(self):
+        """R7-S2: a doc with notes on some pages (an earlier summarize_doc failed mid-way) still
+        gets the rest noted before drafting."""
+        user = "li-b9-partial"
+        c = db.conn()
+        with c:
+            c.execute(
+                "INSERT INTO doc_notes (user_id, doc_id, page, kind, content)"
+                " VALUES (?, 'Q3-plan', 1, 'key_fact', 'fact from page 1')",
+                (user,),
+            )
+        fake = self._fake_chat(
+            lambda page: json.dumps({"summary": "s", "key_facts": [f"fact from page {page}"]})
+        )
+        with mock.patch.object(llm, "chat", fake):
+            out = linkedin.write_linkedin_post(user, "t1", "launch post", "Q3-plan")
+        self.assertEqual(out, CLEAN)
+        pages = docs.page_count("Q3-plan")
+        self.assertEqual(fake.calls, ["doc_note"] * (pages - 1) + ["linkedin"])
+
+    def test_no_facts_means_no_draft(self):
+        fake = self._fake_chat(lambda page: json.dumps({"summary": "", "key_facts": []}))
+        with mock.patch.object(llm, "chat", fake):
+            out = linkedin.write_linkedin_post("li-b9-empty", "t1", "launch post", "Q3-plan")
+        self.assertTrue(out.startswith("error:"), out)
+        self.assertNotIn("linkedin", fake.calls)
+        with mock.patch.object(llm, "chat", fake), self.assertRaises(ValueError):
+            linkedin.write_linkedin_post("li-b9-empty", "t1", "launch post", "no-such-doc")
 
 
 class FetchDocTest(unittest.TestCase):
@@ -158,6 +256,30 @@ class FetchDocTest(unittest.TestCase):
                 docs.fetch_doc("u", "t", doc_id=bad)
         with self.assertRaises(ValueError):
             docs.fetch_doc("u", "t", doc_id="Q3-plan", page=999)
+
+    def test_csv_header_repeated_on_every_page(self):
+        """B7: a hard-split CSV keeps its column names on every page, rows stay whole, and
+        nothing is lost or duplicated besides the header copies."""
+        header = "date,region,units,revenue,cost"
+        rows = [
+            f"2026-01-{r % 28 + 1:02d},R{r % 7},{r * 37 % 1000},{r * 7919}.13,{r}.50"
+            for r in range(600)
+        ]
+        csv = "Sales export\n\n" + "\n".join([header, *rows])
+        pages = docs.paginate(csv, page_chars=3000, page_tokens=900)
+        self.assertGreater(len(pages), 3)
+        table = [
+            p.split("\n\n")[-1].rstrip("\n") for p in pages if "," in p
+        ]  # page 1: "Sales export"
+        for i, page in enumerate(table, 1):
+            with self.subTest(page=i):
+                self.assertEqual(page.split("\n", 1)[0], header)
+                self.assertLessEqual(len(pages[i - 1]), 3000)
+                self.assertLessEqual(docs._tokens(pages[i - 1]), 900)
+        body = [line for page in table for line in page.split("\n")[1:]]
+        self.assertEqual(body, rows)
+        prose = "word " * 3000  # no table: hard split as before, no header added
+        self.assertEqual("".join(docs.paginate(prose, page_chars=2000)), prose.rstrip("\n"))
 
     def test_fetch_doc_paginates_once(self):
         """R4-S1: fetch_doc indexes the pages it already has instead of paginating again."""

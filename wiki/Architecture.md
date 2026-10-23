@@ -56,12 +56,14 @@ Step by step:
 2. `ingest_turn(user, ...)` stores the message in `messages` (a trigger indexes it in
    `messages_fts`) and opens a new `turn_no`.
 3. `build_context` puts everything system into **one** first message: `SYSTEM_PROMPT` + the
-   capability index + `memory.memory_text()` (facts, chat summary, docs noted in this thread).
+   capability index + `memory.memory_text()` (facts, chat summary, docs whose notes were written in this thread).
    Then it adds the last `RECENT_TURNS = 20` messages and calls `trim_to_budget` (see [[Token budget|Token-budget]]).
 4. `run_tool_loop` calls the model through `_chat_trimmed`. Tools without a capability are always
    sent. A capability's tools are sent only after `load_capability(name)` succeeded in this same
    `send`. A call to a tool whose capability is not loaded gets an error result telling the model
-   to load it first.
+   to load it first. If the user's message mentions LinkedIn, `linkedin` was not loaded and the
+   reply ends in a hashtag line, the model gets one nudge to redo it through `write_linkedin_post`
+   (once per `send`; the nudge says to resend a non-post reply unchanged).
 5. Tool errors go back to the model as `error: ...` strings, never up to the user. After a
    successful `forget`, every message of the loop is redacted and the system block is rebuilt.
 6. After 6 steps the model gets one last call without tools, so the user still gets an answer.

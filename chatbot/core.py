@@ -1,6 +1,7 @@
 """send(user_id, thread_id, text) -> reply. The one entry point for web, Slack and scenarios."""
 
 import json
+import re
 import threading
 from collections.abc import Callable
 
@@ -20,7 +21,7 @@ Documents:
 - To read, quote or answer from a specific page of a document: load_capability("docs"), then fetch_doc(doc_id, page). summarize_doc only gives an overview; never quote its notes as page text.
 Capabilities:
 - Their tools are available only after load_capability(name); call it first.
-- LinkedIn posts: load_capability("linkedin"), use write_linkedin_post, return the post verbatim.
+- Every LinkedIn post, also one about a document or after summarize_doc: load_capability("linkedin"), then write_linkedin_post (pass source_doc_id for a document), return the post verbatim. Never write a LinkedIn post yourself.
 - To contact a person (e.g. "message my partner"): load_capability("messaging"), then send_message."""  # noqa: E501
 RECENT_TURNS = 20  # messages loaded before trimming; trimming enforces the real limit
 MAX_TOOL_STEPS = 6
@@ -41,6 +42,15 @@ CUT_MARK = (
 TRIM_NOTE = (
     "[Context note: some earlier messages of this chat were shortened or left out to fit the token "
     "budget and are not in the summary either. Call search_history if the user refers to them.]"
+)
+
+_LINKEDIN = re.compile(r"\blinked\s?in\b", re.I)
+_HASHTAG_LINE = re.compile(r"(?:#\w+[\s,]*)+")  # posts end in hashtags (linkedin.RULES)
+LINKEDIN_NUDGE = (
+    "[App note, not the user: that reply looks like a LinkedIn post written without the linkedin "
+    "capability, so its rules were not checked. Call load_capability('linkedin'), then "
+    "write_linkedin_post (pass source_doc_id if the post is about a document) and return its "
+    "post verbatim. If that reply was not a LinkedIn post, send it again unchanged.]"
 )
 
 # name -> {"schema": <OpenAI function schema dict>, "fn": callable(user_id, thread_id, **args) ->
@@ -196,10 +206,19 @@ def run_tool_loop(
     owners = capabilities.tool_owners()
     loaded: set[str] = set()
     messages = list(messages)
+    nudged = False
     for _ in range(MAX_TOOL_STEPS):
         msg = _chat_trimmed(messages, _schemas(_exposed(tools, owners, loaded)), thread_id)
         if not msg.tool_calls:
-            return msg.content or ""
+            reply = msg.content or ""
+            if not nudged and "linkedin" not in loaded and _unchecked_post(messages, reply):
+                nudged = True  # B8: one retry through the rule-checked drafter, never a loop
+                messages += [
+                    {"role": "assistant", "content": memory.filter_reply(reply)},
+                    {"role": "user", "content": LINKEDIN_NUDGE},
+                ]
+                continue
+            return reply
         messages.append(
             {
                 "role": "assistant",
@@ -232,6 +251,14 @@ def run_tool_loop(
                 messages = _scrub_forgotten(messages, user_id, thread_id)
     # Out of steps: ask once more without tools so the user still gets an answer.
     return _chat_trimmed(messages, None, thread_id).content or ""
+
+
+def _unchecked_post(messages: list[dict], reply: str) -> bool:
+    """The user asked about LinkedIn and the reply looks like a post (ends in a hashtag line) the
+    model wrote without the linkedin capability, so its rules were never checked."""
+    asked = next((m.get("content") or "" for m in reversed(messages) if m["role"] == "user"), "")
+    last = (reply.strip().splitlines() or [""])[-1].strip()
+    return bool(_LINKEDIN.search(asked) and _HASHTAG_LINE.fullmatch(last))
 
 
 def _scrub_forgotten(messages: list[dict], user_id: str, thread_id: str) -> list[dict]:
@@ -325,12 +352,13 @@ def send(user_id: str, thread_id: str, text: str) -> str:
                     "DELETE FROM messages WHERE id = ?", (msg_id,)
                 )  # trigger drops the FTS row
             raise
-        reply = memory.filter_reply(reply)
+        reply = linkedin.strip_draft_lines(memory.filter_reply(reply))
         ingest_turn(user_id, thread_id, "assistant", reply)
         # Draft link is appended after storing: a percent-encoded copy of the post in history would
-        # escape forget scrubbing and cost context tokens. The post is redacted before encoding.
+        # escape forget scrubbing and cost context tokens. The post is redacted before encoding,
+        # and linked only when the reply shows it (R6-SEC-W1: no link to text the user never saw).
         post = linkedin.pop_draft(user_id, thread_id)
-        if post:
+        if post and linkedin.shows_post(reply, memory.filter_reply(post)):
             reply += "\n\n" + linkedin.draft_line(memory.filter_reply(post))
     return reply
 

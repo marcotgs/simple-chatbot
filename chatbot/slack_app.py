@@ -22,7 +22,10 @@ REFUSAL = "Sorry, this bot only talks to its owner."
 # a dead bot. Never stored in messages.
 ACK = ":hourglass_flowing_sand: Working on it…"
 ACK_FILE = ":hourglass_flowing_sand: Reading your file…"
-_DRAFT_LINE = re.compile(rf"{re.escape(linkedin.DRAFT_LABEL)}: (https://www\.linkedin\.com/\S+)")
+# Only the line core.send appends (exact prefix, end of reply) becomes a link (R6-SEC-W1).
+_DRAFT_LINE = re.compile(
+    rf"\n\n{re.escape(linkedin.DRAFT_LABEL)}: ({re.escape(linkedin.DRAFT_URL)}\S*)\Z"
+)
 _MENTION = re.compile(r"^\s*<@[A-Z0-9]+(?:\|[^>]*)?>\s*")  # leading <@BOT> in app_mention text
 
 log = logging.getLogger("chatbot.slack")
@@ -148,10 +151,15 @@ def _answer(user_id: str, text: str, ref: str) -> str:
 
 def _slack_links(reply: str) -> str:
     """The LinkedIn draft line as a clickable mrkdwn link. The URL is percent-encoded except its
-    one '&', which Slack wants escaped; it holds no '<', '>' or '|' that could break the link."""
-    return _DRAFT_LINE.sub(
-        lambda m: f"<{m.group(1).replace('&', '&amp;')}|{linkedin.DRAFT_LABEL}>", reply
-    )
+    one '&', which Slack wants escaped; it holds no '<', '>' or '|' that could break the link.
+    Everything else is model text: '&', '<' and '>' are escaped so it cannot form a link or
+    mention of its own (R7-SEC-S1)."""
+    m = _DRAFT_LINE.search(reply)
+    head = reply[: m.start()] if m else reply
+    head = head.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    if not m:
+        return head
+    return f"{head}\n\n<{m.group(1).replace('&', '&amp;')}|{linkedin.DRAFT_LABEL}>"
 
 
 def handle_command(ack, command: dict, respond) -> None:

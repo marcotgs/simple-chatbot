@@ -55,7 +55,7 @@ UPLOADS_DIR = DB_PATH.parent / "uploads"
 MAX_FILE_BYTES = int(os.environ.get("MAX_FILE_BYTES") or 0)  # 0 = unlimited
 # summarize_doc: pages noted in parallel (1 = one page at a time) and the completion cap per note.
 DOC_NOTE_WORKERS = max(1, int(os.environ.get("DOC_NOTE_WORKERS") or 4))
-DOC_NOTE_MAX_TOKENS = int(os.environ.get("DOC_NOTE_MAX_TOKENS") or 500)
+DOC_NOTE_MAX_TOKENS = int(os.environ.get("DOC_NOTE_MAX_TOKENS") or 1000)
 
 if TARGET_INPUT_TOKENS >= MAX_INPUT_TOKENS:
     raise ValueError("TARGET_INPUT_TOKENS must be below MAX_INPUT_TOKENS")

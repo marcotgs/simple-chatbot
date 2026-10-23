@@ -27,6 +27,19 @@ def draft_line(post: str) -> str:
     return f"{DRAFT_LABEL}: {url}"
 
 
+def strip_draft_lines(reply: str) -> str:
+    """Drop draft lines the model wrote itself (e.g. copied from an injected doc): only
+    core.send appends the real one (R6-SEC-W1)."""
+    lines = reply.splitlines()
+    kept = [line for line in lines if not line.lstrip().startswith(DRAFT_LABEL)]
+    return reply if len(kept) == len(lines) else "\n".join(kept).strip()
+
+
+def shows_post(reply: str, post: str) -> bool:
+    """True when the reply contains the post (whitespace-insensitive)."""
+    return bool(post.split()) and " ".join(post.split()) in " ".join(reply.split())
+
+
 def pop_draft(user_id: str, thread_id: str) -> str | None:
     return _drafts.pop((user_id, thread_id), None)
 
@@ -35,7 +48,7 @@ RULES = f"""- At most {MAX_CHARS} characters in total.
 - At most {MAX_HASHTAGS} hashtags, and all hashtags go at the very end (nothing but hashtags after the first one).
 - No links of any kind: no http:// or https://, no www., no bare domains like example.com."""  # noqa: E501
 
-_HASHTAG = re.compile(r"(?<![\w#/])#\w+")
+HASHTAG = re.compile(r"(?<![\w#/])#\w+")
 # ponytail: bare domains matched against a fixed TLD list; extend the list if other TLDs slip
 # through.
 _LINKS = [
@@ -60,10 +73,10 @@ def check_linkedin_post(text: str) -> list[str]:
         violations.append("post is empty")
     if len(text) > MAX_CHARS:
         violations.append(f"too long: {len(text)} characters (max {MAX_CHARS})")
-    tags = list(_HASHTAG.finditer(text))
+    tags = list(HASHTAG.finditer(text))
     if len(tags) > MAX_HASHTAGS:
         violations.append(f"too many hashtags: {len(tags)} (max {MAX_HASHTAGS})")
-    if tags and _HASHTAG.sub("", text[tags[0].start() :]).strip(" \t\r\n,|"):
+    if tags and HASHTAG.sub("", text[tags[0].start() :]).strip(" \t\r\n,|"):
         violations.append(
             "hashtags must all be at the very end, with only hashtags after the first one"
         )
@@ -111,19 +124,37 @@ def generate_linkedin_post(brief: str, facts: str = "", thread_id: str | None = 
     )
 
 
-def _doc_key_facts(user_id: str, doc_id: str) -> str:
+def _doc_key_facts(user_id: str, doc_id: str, brief: str = "") -> str:
     """This user's key facts already extracted for a doc (doc_notes), never the raw doc. Notes are
-    cached per user (summarize_doc skips noted pages), so no thread filter."""
+    cached per user (summarize_doc skips noted pages), so no thread filter. Facts sharing words
+    with the brief come first, then each page's facts in turn (its most important first), so
+    every page is covered before any page gets a second fact; whole lines up to
+    MAX_FACTS_CHARS."""
+    from chatbot.memory.retrieval import STOPWORDS  # lazy: memory imports capabilities
+
     rows = (
         db.conn()
         .execute(
-            "SELECT content FROM doc_notes WHERE user_id = ? AND doc_id = ? AND kind = 'key_fact'"
-            " ORDER BY id LIMIT 20",
+            "SELECT page, content FROM doc_notes WHERE user_id = ? AND doc_id = ?"
+            " AND kind = 'key_fact' ORDER BY page, id",
             (user_id, doc_id),
         )
         .fetchall()
     )
-    return "\n".join(f"- {r['content']}" for r in rows)[:MAX_FACTS_CHARS]
+    words = {w for w in re.findall(r"\w+", brief.lower()) if len(w) > 2 and w not in STOPWORDS}
+    rank: dict[int, int] = {}
+    keyed = []
+    for r in rows:
+        nth = rank[r["page"]] = rank.get(r["page"], -1) + 1
+        hits = sum(w in r["content"].lower() for w in words)
+        keyed.append(((-hits, nth, r["page"]), f"- {r['content']}"))
+    out, size = [], 0
+    for _, line in sorted(keyed):
+        if size + len(line) + 1 > MAX_FACTS_CHARS:
+            continue
+        out.append(line)
+        size += len(line) + 1
+    return "\n".join(out)
 
 
 def write_linkedin_post(
@@ -131,7 +162,20 @@ def write_linkedin_post(
 ) -> str:
     if not (brief or "").strip():
         return "error: brief is required"
-    facts = _doc_key_facts(user_id, source_doc_id) if source_doc_id else ""
+    facts = ""
+    if source_doc_id:
+        doc_id = source_doc_id.strip().removesuffix(".md")
+        from chatbot.memory import doc_notes  # lazy: memory imports capabilities
+
+        # B9/R7-S2: note every page not noted yet (noted pages are skipped, so this is one
+        # paginate when the doc is fully noted) instead of drafting from partial notes.
+        doc_notes.summarize_doc(user_id, thread_id, doc_id)  # unknown doc -> ValueError
+        facts = _doc_key_facts(user_id, doc_id, brief)
+        if not facts:
+            return (
+                f"error: no key facts could be read from {doc_id!r}, so no post was drafted. "
+                "Put the facts in the brief, or check the doc with search_doc_notes or fetch_doc."
+            )
     post = generate_linkedin_post(brief, facts, thread_id)
     if not post.startswith("error:"):
         _drafts[(user_id, thread_id)] = post
@@ -149,15 +193,17 @@ def validate_linkedin_post(user_id: str, thread_id: str, text: str = "") -> str:
 INSTRUCTIONS = f"""LinkedIn post rules (enforced by code, not optional):
 {RULES}
 How to work:
-- Use write_linkedin_post(brief, source_doc_id). Put every key fact (dates, names, numbers) in the brief;
-  the drafter does not read documents. It returns a post that already passes the rules, or an error.
-- Return the post to the user verbatim. If you edit it, run validate_linkedin_post(text) before replying.
+- Use write_linkedin_post(brief, source_doc_id). Put every key fact you know (dates, names, numbers) in the brief.
+  For a post about a document always pass source_doc_id: the drafter then also gets the doc's key facts from its
+  notes (the app notes the doc first if needed). It returns a post that already passes the rules, or an error.
+- Return the post to the user verbatim, as plain text (no markdown, no quote marks). If you edit it, run validate_linkedin_post(text) before replying.
 - Never paste a whole document into the brief.
 - The app adds a link that opens the validated post as a LinkedIn draft; never write that link yourself."""  # noqa: E501
 
 CAPABILITY = {
     "name": "linkedin",
-    "one_line": "draft and validate LinkedIn posts (strict length/hashtag/no-link rules)",
+    "one_line": "REQUIRED for every LinkedIn post, also one about a document: draft and validate it"
+    " (strict length/hashtag/no-link rules)",
     "instructions": INSTRUCTIONS,
     "tools": [
         (

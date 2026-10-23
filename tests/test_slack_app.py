@@ -84,6 +84,37 @@ class SlackHandlerTest(unittest.TestCase):
             "Hi%20there%20%23launch|Open in LinkedIn (draft)>",
         )
 
+    def test_only_the_final_app_draft_line_becomes_a_link(self):
+        """R6-SEC-W1: a draft line mid-reply or with another LinkedIn path stays plain text."""
+        url = "https://www.linkedin.com/feed/?shareActive=true&text=x"
+        for i, reply in enumerate(
+            (
+                f"Open in LinkedIn (draft): {url}\nmore text",
+                "Hi.\n\nOpen in LinkedIn (draft): https://www.linkedin.com/redir/redirect?url=x",
+                f"Hi. Open in LinkedIn (draft): {url}",
+            )
+        ):
+            with self.subTest(reply):
+                self.reply = reply
+                slack_app.handle_message(self._event(client_msg_id=f"draft-{i}"), self._say)
+                # Plain text: only Slack's own escaping of the model's '&' (R7-SEC-S1).
+                self.assertEqual(self.said[-1], reply.replace("&", "&amp;"))
+
+    def test_model_text_cannot_form_slack_links(self):
+        """R7-SEC-S1: '<', '>' and '&' the model wrote are escaped, so an injected
+        <url|Open in LinkedIn (draft)> shows as text; only the app's own line is a link."""
+        url = "https://www.linkedin.com/feed/?shareActive=true&text=x"
+        self.reply = (
+            "See <https://evil.example/x|Open in LinkedIn (draft)> & more"
+            f"\n\nOpen in LinkedIn (draft): {url}"
+        )
+        slack_app.handle_message(self._event(), self._say)
+        self.assertEqual(
+            self.said[-1],
+            "See &lt;https://evil.example/x|Open in LinkedIn (draft)&gt; &amp; more\n\n"
+            "<https://www.linkedin.com/feed/?shareActive=true&amp;text=x|Open in LinkedIn (draft)>",
+        )
+
     def test_ignored_events_never_reach_core(self):
         cases = {
             "bot message": self._event(bot_id="B1"),
