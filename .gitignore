@@ -11,3 +11,6 @@ __pycache__/
 .venv/
 *.egg-info/
 forget.key
+# Claude agent memories (local, per-developer)
+.claude/agent-memory/
+
