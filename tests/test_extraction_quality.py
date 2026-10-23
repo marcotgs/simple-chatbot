@@ -131,6 +131,14 @@ HELD_OUT = [
         "Wait, I typed that wrong: my spouse is Robin.",
         (["robin"], G, "dana"),
     ),
+    # a new value for the user's own fact with no change words is still an update (B1)
+    (["I live in Leeds."], "I live in Bristol.", (["bristol"], G, "leeds")),
+    # known keys on other topics must not stop a new fact from being stored (B6)
+    (
+        ["I live in Leeds.", "My partner is Odile."],
+        "I play the cello in a community orchestra.",
+        (["cello"], G),
+    ),
     # durable facts in other domains, shapes and languages
     ([], "Our team agreed last week that releases ship on Thursdays.", (["thursday"], G)),
     ([], "Meu cachorro se chama Biscoito.", (["biscoito"], G)),
