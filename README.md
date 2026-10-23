@@ -43,7 +43,7 @@ curl -s http://127.0.0.1:8765/send \
 `WEB_TOKEN` is set. Other routes: `GET /threads`, `GET /history?thread_id=...`, `GET /healthz`.
 Host, origin and token rules: [Architecture](wiki/Architecture.md).
 
-From the command line:
+From the command line (a live model call: needs `OPENROUTER_API_KEY` and spends credit):
 
 ```sh
 .venv/bin/python -c 'from chatbot import core; print(core.send("user-1", "demo", "What is my manager called?"))'
@@ -126,7 +126,8 @@ calls `load_capability(name)` in the same `send`. Details: [Capabilities guide](
   searched with the user's message, and the top hits go into the context.
   [Memory model](wiki/Memory-model.md)
 - **Forget.** It runs only when the user's own message asks for it and names the fact. A sentence
-  that negates the request ("don't forget ...") never deletes. Anything wider than one stored fact
+  that negates the request ("don't forget ...") is refused as a whole; punctuation and markup other than a
+  sentence break do not end the negation. Anything wider than one stored fact
   is refused. A forgotten value is purged from every store and checked afterwards.
   [Memory model](wiki/Memory-model.md)
 - **Token budget.** `MAX_INPUT_TOKENS` (default 8000) is the hard limit per model call, checked
@@ -162,7 +163,8 @@ Copy `.env.example` to `.env`; real environment variables win. The main settings
 | `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, `SLACK_USER_ID` | (empty) | Slack bot; starts only with both tokens |
 
 Every other setting (`JUDGE_MODEL`, `GATE_MODEL`, `HOST`, `ALLOWED_HOSTS`, `MAX_FILE_BYTES`,
-`DOC_NOTE_WORKERS`, ...) is documented in `.env.example`.
+`DOC_NOTE_WORKERS`, ...) is documented in `.env.example` and in the
+[configuration table](wiki/Architecture.md#configuration).
 
 ## Known limits
 

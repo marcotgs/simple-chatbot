@@ -109,17 +109,21 @@ file under the same name deletes its old notes.
 ## Forget
 
 The `forget` tool ([`tools.py`](https://github.com/marcotgs/simple-chatbot/blob/main/chatbot/memory/tools.py))
-runs only when the latest user message (cut before any Slack file note) contains one of
-`forget|delete|erase|remove|wipe|purge` (a negation up to 3 words before the verb, such as "don't
-forget", "do not ever delete" or "I do not want you to delete", is removed first; a comma or period
-ends it) **and** the user's own words name the fact:
+runs only when the user's own latest message (cut before any Slack file note) asks for it **and**
+names the fact:
 
-- the content words of the subject, in order, in the user's text; or
-- the user's words from the clause with the verb (the verb stripped) plus at most a couple of extra
-  words that all belong to one stored fact key ("Forget my address" names `home_address`).
+- A sentence of that message holds one of `forget|delete|erase|remove|wipe|purge`, and the words
+  that name the fact are together in that same sentence.
+- Any sentence that negates the request ("don't forget ...", "never delete ...", "you cannot
+  erase ...") is refused as a whole. Punctuation and markup other than a sentence break do not
+  end the negation, so "never forget, then delete my address" and "don't *forget* my address" are
+  refused too; only a sentence break does.
+- Words the model adds to the subject are allowed only if, together with the words the user typed,
+  they all belong to ONE stored fact key ("Forget my address" names `home_address`).
 
 Anything wider returns `error: not run`. Corrections never call it. A deletion that resolves to no
-stored data deletes nothing.
+stored data deletes nothing. With the resolver model down, a subject that matches more than one
+key deletes nothing.
 
 [`forget.forget`](https://github.com/marcotgs/simple-chatbot/blob/main/chatbot/memory/forget.py) then:
 

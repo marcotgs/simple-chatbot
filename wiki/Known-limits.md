@@ -21,12 +21,17 @@ Accepted risks and open issues as of the current `main`. Each item names where i
 
 ## Forget
 
-- **English-only cue.** The `forget` tool runs only when the user's message contains
-  `forget|delete|erase|remove|wipe|purge` and the user's own words name the fact: the subject's
-  content words in order, or the clause's words plus at most a couple of extra words from one stored
-  fact key
+- **English-only cue.** The `forget` tool runs only when the user's own message asks for it
+  (`forget|delete|erase|remove|wipe|purge`) and names the fact in the same sentence as the verb.
+  Words the model adds must, with the typed ones, all belong to one stored fact key, and a sentence
+  that negates the request is refused as a whole; punctuation and markup other than a sentence
+  break do not end the negation
   ([`memory/tools.py`](https://github.com/marcotgs/simple-chatbot/blob/main/chatbot/memory/tools.py)).
   A request in another language, or one wider than a single fact, is refused.
+- **Negation reach.** A negation more than 4 words before the verb is not detected, so that
+  sentence can still delete.
+- **Fail-closed refusals.** The negation check errs toward refusing: "No, forget my address" and
+  "Don't keep it, forget my address" are refused. Rephrase without the negation.
 - **Single owner, global tombstones.** Tombstones in `forgotten` are not per user: a value one user
   forgot is redacted for every user of the instance. Fine for the intended single-owner use, wrong
   for multiple users.
@@ -39,11 +44,25 @@ Accepted risks and open issues as of the current `main`. Each item names where i
   appear separately in the FTS vocabulary.
 - Subjects whose words are all 2 characters or shorter ("forget my IP") are always refused, because
   `content_words` drops them. Fail-closed (R5-SEC-S4).
-- **Negation split off by a comma is not seen.** The guard treats "don't (… up to 4 words) delete"
-  as a keep-it request, but a comma ends the clause: "Do NOT, under any circumstances, delete my
-  home address" still passes the guard, and the model decides (R7-SEC-W1).
 - Copies outside the app are out of reach: backups of the `data/` folder you made yourself and
   OpenRouter retention.
+
+## Auto-recall
+
+Accepted residuals of the `<recall>` block
+([`core.py`](https://github.com/marcotgs/simple-chatbot/blob/main/chatbot/core.py), see
+[[Memory model|Memory-model]]):
+
+- **Weak hits.** The bm25 search OR-joins the query words, so common words can match unrelated old
+  messages and inject weak hits. The block is capped at 300 tokens.
+- **Trimmed window messages are not recalled.** Recall searches only messages older than the
+  20-message window. A window message that `trim_to_budget` drops is reachable only through the
+  `search_history` tool.
+- **Stored text is model-visible.** Recalled text reaches the model as user-role data. It is fenced
+  and neutralised, but the model still reads it, so an old hostile message can still try to steer it.
+- **Two user-role messages in a row.** The recall block and the current message are consecutive
+  user-role messages. OpenRouter with `openai/gpt-4.1-mini` accepts this; other providers are
+  untested.
 
 ## Token estimate
 
@@ -84,13 +103,6 @@ Accepted risks and open issues as of the current `main`. Each item names where i
   networking, that port can rarely collide with a Windows listener, and the test gets a 404 from a
   foreign process. This is the environment, not the product: rerun the test.
 
-## Slack
-
-- **Live Slack is not tested automatically.** Socket Mode, `/bot`, mentions and file share are tested
-  offline with fakes ([`tests/test_slack_app.py`](https://github.com/marcotgs/simple-chatbot/blob/main/tests/test_slack_app.py),
-  integration tests). A real workspace is a manual check (see [[Slack setup|Slack-setup]]).
-- Event dedupe is in memory (last 1000 keys). A Slack retry that arrives across a restart can be
-  answered twice.
 
 ## Other
 

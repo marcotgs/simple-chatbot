@@ -26,7 +26,8 @@ SDK, `slack_bolt` (Socket Mode), `pypdf` for PDF uploads. See
 
 1. `make install`: creates `.venv` and installs the hashed dev lock plus the package.
 2. `cp .env.example .env`, then set `OPENROUTER_API_KEY` (see
-   [`.env.example`](https://github.com/marcotgs/simple-chatbot/blob/main/.env.example)).
+   [`.env.example`](https://github.com/marcotgs/simple-chatbot/blob/main/.env.example); every
+   setting: [[Architecture#configuration|Architecture]]).
 3. `make run`: starts the web server on port 8765. It also starts the Slack bot when
    `SLACK_BOT_TOKEN` and `SLACK_APP_TOKEN` are both set.
 4. Open `http://127.0.0.1:8765/`, or call the API:
@@ -44,7 +45,7 @@ Other targets (`make help` lists them all): `make test` (offline unit tests),
 
 | Page | What it covers |
 | --- | --- |
-| [[Architecture]] | Components, the `core.send` request flow and tool loop, SQLite tables, file layout |
+| [[Architecture]] | Components, HTTP API, configuration, the `core.send` request flow and tool loop, SQLite tables, file layout |
 | [[Memory model|Memory-model]] | Fact scopes, extraction and the salience gate, supersession, summaries, retrieval, doc notes, forget |
 | [[Token budget|Token-budget]] | Estimator, `TARGET`/`MAX`, trimming phases, the `llm_calls` log and how to read it |
 | [[Capabilities guide|Capabilities-guide]] | How `load_capability` gating works, built-ins, adding a capability step by step |

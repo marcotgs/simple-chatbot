@@ -21,11 +21,56 @@ always show `user-1`. The Slack bot maps the owner's Slack member ID to the same
 its current Slack thread (`slack-dm`, then `slack-dm-2`, ... after each `/bot new`), so the web page
 shows the Slack conversation too.
 
-Server guards: `POST /send` needs `Content-Type: application/json` (else 415) and a body up to
-64 KB. The `Host` header must be loopback on the bound port or listed in `ALLOWED_HOSTS` (else 403),
-and an `Origin` header must match it. With `WEB_TOKEN` set, every route except `/` and `/healthz`
-needs `X-Web-Token` or `?token=`. The server refuses to start on a non-loopback `HOST` without
-`WEB_TOKEN`.
+### HTTP API
+
+Routes ([`server.py`](https://github.com/marcotgs/simple-chatbot/blob/main/chatbot/server.py)):
+`GET /` (chat page), `GET /healthz`, `GET /threads`, `GET /history?thread_id=...` and
+`POST /send` with JSON `{"thread_id": ..., "text": ..., "user_id": ...}` (`user_id` optional,
+default `user-1`), answered with `{"reply": ...}`.
+
+- `POST /send` needs `Content-Type: application/json` (else 415) and a body up to 64 KB (else 413).
+- `Host` must be `127.0.0.1:<port>`, `localhost:<port>`, `[::1]:<port>` or listed in
+  `ALLOWED_HOSTS`, and a present `Origin` must match it (else 403). This blocks CSRF and DNS
+  rebinding.
+- With `WEB_TOKEN` set, every route except `/` and `/healthz` needs header `X-Web-Token` or query
+  `?token=` (else 401). Open the page once as `/?token=...`: it keeps the token in localStorage,
+  sends it as the header and removes it from the visible URL. With `WEB_TOKEN` empty there is no
+  auth, and the server refuses to start on a non-loopback `HOST`.
+- A token budget overrun answers 413 with the reason. Other failures answer 500; details go only to
+  the server log.
+- Every response sends `X-Frame-Options: DENY` and `Content-Security-Policy: frame-ancestors 'none'`.
+
+### Configuration
+
+[`config.py`](https://github.com/marcotgs/simple-chatbot/blob/main/chatbot/config.py) reads the
+environment plus an optional `.env` (copy
+[`.env.example`](https://github.com/marcotgs/simple-chatbot/blob/main/.env.example)); real
+environment variables win. Relative paths are relative to the repo root.
+
+| Variable | Default | Secret | Purpose |
+| --- | --- | --- | --- |
+| `OPENROUTER_API_KEY` | (none, required) | yes | OpenRouter key for chat, judge and gate calls |
+| `LLM_MODEL` | `openai/gpt-4.1-mini` | no | Chat model; must support tool calling and return usage |
+| `JUDGE_MODEL` | `LLM_MODEL` | no | JSON decision calls (extraction, forget resolver) |
+| `GATE_MODEL` | `typesafe/jev-1.14` | no | Salience gate model; empty = gate off |
+| `GATE_THRESHOLD` | `0.3` | no | Gate probability below which extraction is skipped |
+| `MAX_INPUT_TOKENS` | `8000` | no | Hard input limit per call (provider usage) |
+| `TARGET_INPUT_TOKENS` | `6500` | no | Trim target; must be below MAX (else startup fails) |
+| `FORGET_SECRET` | (generated `forget.key` next to the DB) | yes | HMAC key for forget tombstones; keep it stable |
+| `DB_PATH` | `./data/chatbot.db` | no | SQLite file; uploads and `forget.key` live next to it |
+| `CALL_LOG_PATH` | `./logs/calls.jsonl` | no | Per-call usage log |
+| `HOST` | `127.0.0.1` | no | Bind address; non-loopback requires `WEB_TOKEN` |
+| `PORT` | `8000` (`make run`: 8765) | no | HTTP port |
+| `WEB_TOKEN` | (empty = no auth) | yes | Shared secret for the web page and API |
+| `ALLOWED_HOSTS` | (empty) | no | Extra accepted `Host` values, comma separated |
+| `SLACK_BOT_TOKEN` | (empty) | yes | `xoxb-` bot token; Slack starts only with both tokens |
+| `SLACK_APP_TOKEN` | (empty) | yes | `xapp-` Socket Mode token |
+| `SLACK_USER_ID` | (empty) | no | Owner's Slack member ID; everyone else is refused |
+| `MAX_FILE_BYTES` | `0` (unlimited) | no | Largest Slack file the bot downloads |
+| `DOC_NOTE_WORKERS` | `4` | no | Parallel page-note calls in `summarize_doc`; `1` = sequential |
+| `DOC_NOTE_MAX_TOKENS` | `1000` | no | Completion token cap per page-note call |
+| `SSL_CERT_FILE`, `SSL_CERT_DIR` | (unset = pinned `certifi` bundle) | no | CA for model calls, e.g. behind a TLS-inspecting proxy |
+| `RUN_LIVE_TESTS` | (unset) | no | `1` enables the live test suites (`make test-live` sets it; not in `.env.example`) |
 
 ## Request flow: `core.send`
 
