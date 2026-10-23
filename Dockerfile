@@ -14,15 +14,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# Install only the dependencies declared in pyproject.toml, not the package itself:
+# Install only the locked runtime dependencies, not the package itself:
 # chatbot/config.py derives ROOT from its own file location and reads web/ (and docs/)
 # beside it, so the code must run from /app, not from site-packages.
-# ponytail: no lockfile yet, versions float within pyproject ranges; add a hashed
-# requirements lock (pip-compile / uv) and install with --require-hashes when it matters.
-COPY pyproject.toml ./
-RUN python -c "import tomllib; print('\n'.join(tomllib.load(open('pyproject.toml','rb'))['project']['dependencies']))" > /tmp/requirements.txt \
-    && pip install -r /tmp/requirements.txt \
-    && rm /tmp/requirements.txt
+# requirements.lock is generated from pyproject.toml (see DEPLOY.md "Dependencies"); every
+# package, transitive ones included, is pinned and sha256-checked.
+COPY requirements.lock ./
+RUN pip install --require-hashes --no-deps -r requirements.lock
 
 # Non-root runtime user. /data is the Fly volume mount point (plain dir when run locally).
 RUN useradd --system --uid 10001 --no-create-home --shell /usr/sbin/nologin app \
@@ -32,15 +30,15 @@ RUN useradd --system --uid 10001 --no-create-home --shell /usr/sbin/nologin app 
 # Code stays root-owned (read-only to the app user). .dockerignore keeps .env, data/, logs/ out.
 COPY . .
 
-USER app
+# Numeric uid (the `app` user above), so runtimes can check non-root without reading /etc/passwd.
+USER 10001
 
 EXPOSE 8080
 # Python maps SIGINT to KeyboardInterrupt, which server.main() handles (Fly's default kill_signal is SIGINT).
 STOPSIGNAL SIGINT
 
-# Liveness only: any HTTP response (including 401 when WEB_TOKEN is set) means the server is up.
-# TODO(T6): switch to /healthz (2xx check) once server.py exposes it.
+# Liveness: /healthz answers 200 without auth; urlopen raises on any non-2xx, so exit 1.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-  CMD ["python", "-c", "import os,sys,urllib.request as r,urllib.error as e\ntry: r.urlopen('http://127.0.0.1:%s/' % os.environ.get('PORT', '8080'), timeout=4)\nexcept e.HTTPError: pass\nexcept Exception: sys.exit(1)"]
+  CMD ["python", "-c", "import os,sys,urllib.request as r\ntry: r.urlopen('http://127.0.0.1:%s/healthz' % os.environ.get('PORT', '8080'), timeout=4)\nexcept Exception: sys.exit(1)"]
 
 CMD ["python", "-m", "chatbot.server"]
