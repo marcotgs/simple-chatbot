@@ -1,5 +1,5 @@
 #!/bin/sh
-# pre-push: whole-tree format/lint, full offline test suite, CircleCI config validation.
+# pre-push: whole-tree format/lint, full offline test suite.
 HOOK=pre-push
 . "$(dirname "$0")/_lib.sh"
 
@@ -9,12 +9,4 @@ $RUFF format --check . || fail "files not formatted" "run 'make fmt', commit the
 $RUFF check . || fail "lint errors" "run 'make fmt' (auto-fixes) and fix the rest by hand"
 
 run_offline_tests
-
-if command -v circleci >/dev/null 2>&1; then
-    printf '[%s] circleci config validate\n' "$HOOK"
-    circleci config validate .circleci/config.yml || fail "invalid .circleci/config.yml" \
-        "fix the errors above; re-run 'circleci config validate'"
-else
-    printf '[%s] circleci CLI not installed: config validation skipped\n' "$HOOK"
-fi
 printf '[%s] ok\n' "$HOOK"

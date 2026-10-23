@@ -9,7 +9,7 @@ HOOK=pre-commit
 envfiles=$(git diff --cached --name-only -z --diff-filter=ACMR | tr '\0' '\n' \
     | grep -E '(^|/)(\.env(\..+)?|[^/]+\.env|\.envrc)$' | grep -vE '(^|/)\.env\.example$')
 [ -n "$envfiles" ] && fail "staged env file(s): $(printf '%s ' "$envfiles")" \
-    "unstage them with 'git restore --staged <file>'; secrets live in .env (git-ignored) or CI contexts"
+    "unstage them with 'git restore --staged <file>'; secrets live in .env (git-ignored) or the environment"
 
 # OpenRouter, Slack bot/app, Fly (FlyV1 macaroons, fm2_/fo1_ tokens).
 SECRET_RE='sk-or-[A-Za-z0-9_-]{16,}|xox[abprs]-[A-Za-z0-9-]{10,}|xapp-[A-Za-z0-9-]{10,}|FlyV1 [A-Za-z0-9_,+/=-]{20,}|(fm2|fo1)_[A-Za-z0-9_+/=-]{20,}'

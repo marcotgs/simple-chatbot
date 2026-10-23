@@ -40,18 +40,12 @@ Repo: /Users/marcotgs/projects/simple-chatbot (empty, clean). Agents never commi
 | T8 | tamara | run S1-S7 + variations (rephrasings, other order, restart process) | T6 | B-n bugs triaged; token log shows max < limit | 3,5-12 | todo |
 | T9 | mint | fixes for C/W/B ids; README.md; NOTES.md skeleton | T7,T8 | all findings answered; README covers core/Slack/scenarios/new capability | 13,14 | todo |
 
-| T10 | atlas | `Dockerfile`, `.dockerignore`, `fly.toml`, `.circleci/config.yml` (jobs: test -> build image -> `flyctl deploy --remote-only`, deploy only on `main`, manual approval gate; `FLY_API_TOKEN` + app secrets in a CircleCI context, never in repo), deploy section for README | T9 | image builds locally; `circleci config validate` passes; SQLite on persistent volume; secrets via platform (not in image/repo); healthcheck; web page + Slack Socket Mode run in ONE process; atlas plans, user applies | D-1..D-4 | todo |
-| T11 | peter `FOCUS: security` | deploy diff incl. CircleCI config | T10 | APPROVE: no secrets in image/layers/repo/CI logs, non-root user, public-exposure guard, CI token least-privilege (Fly deploy token scoped to the app), deploy gated to main | D-3 | todo |
+| T10 | — | removed: deployment out of scope | — | — | — | removed |
+| T11 | — | removed: deployment out of scope | — | — | — | removed |
 
-Waves: W1 T1 | W2 T2,T3,T4,T5 (parallel, disjoint files) | W3 T6 | W4 T7,T8 | W5 T9 -> peter re-review | **Phase 3 (deploy)**: W6 T10 | W7 T11 -> user applies deploy.
+Waves: W1 T1 | W2 T2,T3,T4,T5 (parallel, disjoint files) | W3 T6 | W4 T7,T8 | W5 T9 -> peter re-review.
 
-## Phase 3 — Deployment (added by user; brief marks deployment OUT OF SCOPE, so optional/non-graded)
-- D-1 Container image builds and runs the app (web + Slack bot) from one command.
-- D-2 State (SQLite file, logs) on a persistent volume; survives restart.
-- D-3 Public web page must not be open to the world burning the API key: add shared-secret check (single env `WEB_TOKEN`, header/query) — tiny exception to 'no auth'. Slack unaffected (Socket Mode, outbound only, no public URL).
-- D-4 Deploy steps documented in README; atlas never applies, user runs it.
-- Q-6 RESOLVED: Fly.io (volume + secrets, ONE machine because SQLite). CI/CD: CircleCI. User must: connect repo to CircleCI, create Fly app + volume, `fly tokens create deploy`, add token to CircleCI context.
-- Q-7 Evaluators run locally from repo; deploy shouldn't delay submission. Do after T9, skip if time short (brief: honest partial > rushed).
+## Phase 3 — removed: deployment out of scope (user decision 2026-10-23; D-1..D-4, Q-6, Q-7 removed)
 Open-ended cost: S1-S7 live runs cost real API tokens; 500-turn load with extraction on every turn is ~500 small calls.
 
 ## Questions / risks
@@ -67,6 +61,6 @@ Open-ended cost: S1-S7 live runs cost real API tokens; 500-turn load with extrac
 GitHub wiki = separate git repo (`<repo>.wiki.git`). Agents cannot push (no git writes). Mint writes markdown pages to `wiki/` in the working tree; USER enables Wiki on GitHub, creates first page via UI, then clones `<repo>.wiki.git` and copies `wiki/*.md` in + pushes.
 | ID | Agent | Files | Dep | DONE WHEN | Status |
 |---|---|---|---|---|---|
-| T12 | mint | `wiki/*.md` (Home, Architecture, Memory-model, Token-budget, Capabilities-guide, Scenarios, Slack-setup, Deployment-Fly-CircleCI, Known-limits) | T9,T10 | every page matches the code (no invented behaviour); facts/paths verified against repo; sidebar `_Sidebar.md`; README links wiki | todo |
+| T12 | mint | `wiki/*.md` (Home, Architecture, Memory-model, Token-budget, Capabilities-guide, Scenarios, Slack-setup, Known-limits) | T9 | every page matches the code (no invented behaviour); facts/paths verified against repo; sidebar `_Sidebar.md`; README links wiki | todo |
 | T13 | peter | `wiki/` | T12 | APPROVE: accurate vs code, no secrets/tokens/real IDs | todo |
 Waves: W8 T12 | W9 T13.  NOTES.md stays in repo (yours to write), wiki does not replace it.
