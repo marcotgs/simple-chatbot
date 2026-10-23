@@ -1,0 +1,35 @@
+#!/bin/sh
+# pre-commit: secret scan of the staged diff, ruff on staged *.py, offline unit tests.
+HOOK=pre-commit
+. "$(dirname "$0")/_lib.sh"
+
+# 1. Secrets. Only file names are printed, never the matched text.
+# -z: names come raw (no C-quoting of non-ASCII, no splitting on spaces). A name with a newline is
+# split into fragments, which can only add matches (fail closed).
+envfiles=$(git diff --cached --name-only -z --diff-filter=ACMR | tr '\0' '\n' \
+    | grep -E '(^|/)(\.env(\..+)?|[^/]+\.env|\.envrc)$' | grep -vE '(^|/)\.env\.example$')
+[ -n "$envfiles" ] && fail "staged env file(s): $(printf '%s ' "$envfiles")" \
+    "unstage them with 'git restore --staged <file>'; secrets live in .env (git-ignored) or CI contexts"
+
+# OpenRouter, Slack bot/app, Fly (FlyV1 macaroons, fm2_/fo1_ tokens).
+SECRET_RE='sk-or-[A-Za-z0-9_-]{16,}|xox[abprs]-[A-Za-z0-9-]{10,}|xapp-[A-Za-z0-9-]{10,}|FlyV1 [A-Za-z0-9_,+/=-]{20,}|(fm2|fo1)_[A-Za-z0-9_+/=-]{20,}'
+# One pass over the whole staged diff, so every path is covered whatever its name. Added lines only
+# ('+'); '+++ b/<path>' headers are scanned too, which can only add matches (fail closed).
+git diff --cached -U0 --no-color --diff-filter=ACMR | grep -E '^\+' | grep -qE "$SECRET_RE" \
+    && fail "possible secret (API/Slack/Fly token) in the staged diff" \
+        "find it with 'git diff --cached', read the token from the environment instead, and rotate it if it was real"
+
+# 2. Format + lint the staged Python files (working-tree content).
+py=$(git -c core.quotepath=off diff --cached --name-only --diff-filter=ACMR | grep -E '\.py$')
+if [ -n "$py" ]; then
+    need_ruff
+    printf '[%s] ruff on staged files\n' "$HOOK"
+    # shellcheck disable=SC2086  # word splitting of the file list is intended
+    $RUFF format --check $py || fail "files not formatted" "run 'make fmt', review, then 'git add' again"
+    # shellcheck disable=SC2086
+    $RUFF check $py || fail "lint errors" "run 'make fmt' (auto-fixes) and fix the rest by hand"
+fi
+
+# 3. Offline tests.
+run_offline_tests
+printf '[%s] ok\n' "$HOOK"

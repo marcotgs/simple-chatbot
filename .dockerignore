@@ -7,6 +7,7 @@ logs/
 *.db
 *.db-wal
 *.db-shm
+**/forget.key
 
 # VCS, tooling, caches.
 .git/
@@ -22,6 +23,7 @@ logs/
 # Not needed at runtime. Keep docs/: the app reads it.
 tests/
 scenarios/
+deploy/
 Dockerfile
 .dockerignore
 fly.toml

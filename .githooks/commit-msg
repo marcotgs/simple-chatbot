@@ -1,0 +1,14 @@
+#!/bin/sh
+# commit-msg: Conventional Commits subject, e.g. "feat(memory): store session facts".
+HOOK=commit-msg
+. "$(dirname "$0")/_lib.sh"
+
+subject=$(grep -vE '^[[:space:]]*(#|$)' "$1" | head -n 1)
+TYPES='feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert'
+
+# git-generated subjects (merges, reverts, autosquash markers) are left alone.
+printf '%s\n' "$subject" | grep -qE '^(Merge |Revert "|fixup! |squash! |amend! )' && exit 0
+
+printf '%s\n' "$subject" | grep -qE "^($TYPES)(\([A-Za-z0-9._,/-]+\))?!?: [^ ].*" || fail \
+    "commit subject is not a Conventional Commit: '$subject'" \
+    "use '<type>(<scope>)?!?: <subject>' with type one of ${TYPES}, e.g. 'fix(server): reject non-JSON POST'"

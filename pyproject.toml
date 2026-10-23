@@ -5,12 +5,24 @@ description = "One send() core behind a web chat page and a Slack DM bot, with a
 requires-python = ">=3.11"
 dependencies = [
     "openai>=1.40",
+    "pypdf>=5",
     "slack_bolt>=1.18",
 ]
+
+[project.optional-dependencies]
+dev = ["ruff==0.17.2"]
 
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
-[tool.setuptools]
-packages = ["chatbot"]
+[tool.setuptools.packages.find]
+include = ["chatbot*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = [".claude", "scenarios/__pycache__"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
