@@ -13,6 +13,8 @@ _PROMPT = """You maintain the running summary of a long chat between a user and 
 Merge the NEW MESSAGES into the PREVIOUS SUMMARY and return only the updated summary as plain text, at most 300 words.
 Keep every concrete detail: names, numbers, codes, amounts, dates, places, decisions, preferences, commitments and document ids,
 with the turn number for each key detail, e.g. "(turn 20)". Drop greetings and chit-chat; compress older material first.
+Standing preferences and instructions are kept separately as remembered facts: do not restate them as current.
+When one changed, record only the change as history, e.g. "changed from X to Y (turn 17)".
 Text shown as [forgotten] was deleted at the user's request: never reconstruct, guess or mention it."""  # noqa: E501
 
 
