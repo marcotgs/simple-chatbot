@@ -241,5 +241,45 @@ class SdkClientTest(unittest.TestCase):
         self.assertIs(type(client.sdk_configuration.debug_logger), NoOpLogger)
 
 
+class FillOptionalFieldsTest(unittest.TestCase):
+    def test_fills_only_missing_optional_fields(self):
+        body = {"id": "gen-1", "choices": [{"message": {}}, {"index": 7, "finish_reason": "stop"}]}
+        self.assertEqual(
+            json.loads(llm._fill_optional_fields(json.dumps(body))),
+            {
+                "id": "gen-1",
+                "system_fingerprint": None,
+                "choices": [
+                    {"message": {}, "finish_reason": None, "index": 0},
+                    {"index": 7, "finish_reason": "stop"},
+                ],
+            },
+        )
+
+    def test_no_choices_key_is_left_absent(self):
+        out = json.loads(llm._fill_optional_fields('{"system_fingerprint": "fp"}'))
+        self.assertEqual(out, {"system_fingerprint": "fp"})
+
+
+class RecordSignatureTest(unittest.TestCase):
+    FIELDS = dict(
+        purpose="chat",
+        model="m",
+        thread_id="t",
+        estimated_tokens=1,
+        prompt_tokens=1,
+        completion_tokens=1,
+        usage_missing=False,
+        over_limit=False,
+    )
+
+    def test_extra_or_missing_field_is_a_type_error(self):
+        # A typo'd or extra key must fail at the call site, not reach the JSONL log.
+        with self.assertRaises(TypeError):
+            llm._record(**self.FIELDS, message="body text")
+        with self.assertRaises(TypeError):
+            llm._record(**{k: v for k, v in self.FIELDS.items() if k != "over_limit"})
+
+
 if __name__ == "__main__":
     unittest.main()

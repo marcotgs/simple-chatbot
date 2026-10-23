@@ -5,16 +5,32 @@ PORT ?= 8765
 S ?=
 
 .DEFAULT_GOAL := help
-.PHONY: help install hooks run slack test test-live fmt lint check scenario scenarios scenarios-dry gen-docs gen-history clean
+.PHONY: help lock install hooks run slack test test-live fmt lint check scenario scenarios scenarios-dry gen-docs gen-history clean
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
 
-# Lockfiles (uv): uv pip compile pyproject.toml --generate-hashes --universal --no-header
-#   [--extra dev] --exclude-newer <today minus 7 days> -o requirements[-dev].lock
-# Cooldown rule: every pin is >= 7 days old on PyPI. Exceptions need a reason, via
-# --exclude-newer-package <pkg>=<date>: pypdf (security fixes in 6.21.x), ruff (exact pin in pyproject),
-#   certifi (GHSA-6q48-6c7w-9gw2 / PYSEC-2026-4320, fixed in 2026.10.19).
+# Cooldown rule: every pin is >= 7 days old on PyPI. Security floors live in pyproject.toml
+# (pypdf>=6.21.2) and lock-constraints.txt (certifi). If a floor or an exact pin (ruff in the dev
+# extra) is newer than the cutoff, uv fails loudly; exempt that package with a reason via
+#   make lock LOCK_FLAGS='--exclude-newer-package certifi=<date> --exclude-newer-package ruff=<date>'
+# Both locks compile to *.tmp first and replace the real files only if both succeed. The tmp
+# files start as copies of the current locks so uv keeps existing pins as preferences.
+UV ?= uv
+LOCK_FLAGS ?=
+LOCK_COMPILE = $(UV) pip compile pyproject.toml -c lock-constraints.txt --generate-hashes \
+	--universal --no-header --exclude-newer "$$cutoff" $(LOCK_FLAGS)
+lock: ## Re-lock requirements[-dev].lock (uv, 7-day cooldown; exceptions via LOCK_FLAGS=...)
+	trap 'rm -f requirements.lock.tmp requirements-dev.lock.tmp' EXIT; \
+	cutoff="$$($(PY) -c 'import datetime as d; print((d.datetime.now(d.UTC) - d.timedelta(days=7)).date())')" \
+	&& test -n "$$cutoff" \
+	&& for f in requirements.lock requirements-dev.lock; do \
+		if [ -f "$$f" ]; then cp "$$f" "$$f.tmp"; fi; done \
+	&& $(LOCK_COMPILE) -o requirements.lock.tmp \
+	&& $(LOCK_COMPILE) --extra dev -o requirements-dev.lock.tmp \
+	&& mv requirements.lock.tmp requirements.lock \
+	&& mv requirements-dev.lock.tmp requirements-dev.lock
+
 install: ## Create .venv if missing; install the hashed dev lock and the package (editable)
 	@test -x .venv/bin/python || python3 -m venv .venv
 	.venv/bin/python -m pip install --require-hashes --no-deps -r requirements-dev.lock

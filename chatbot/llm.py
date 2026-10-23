@@ -6,6 +6,11 @@ import sys
 import threading
 from datetime import UTC, datetime
 
+import httpx
+from openrouter import OpenRouter, components, errors, utils
+from openrouter.utils import BackoffStrategy, RetryConfig
+from openrouter.utils.logger import NoOpLogger
+
 from chatbot import config, db
 
 # Two classes: letters/spaces at 3.5 chars/token (prose runs ~4), digits and punctuation at 1.4
@@ -23,6 +28,8 @@ class BudgetExceeded(Exception):
 
 
 TIMEOUT_MS = 60_000  # per HTTP attempt
+# max_tokens per purpose, so callers and test fakes of llm.chat keep their signature.
+_COMPLETION_CAP = {"doc_note": config.DOC_NOTE_MAX_TOKENS}
 _client = None  # tests replace this with a fake exposing .chat.send(**kw)
 _client_lock = threading.Lock()
 
@@ -31,33 +38,30 @@ def _get_client():
     global _client
     with _client_lock:  # doc notes call from a thread pool: build one shared client
         if _client is None:
-            if not config.OPENROUTER_API_KEY:
-                raise RuntimeError("OPENROUTER_API_KEY is not set (see .env.example)")
-            import httpx
-            from openrouter import OpenRouter
-            from openrouter.utils import BackoffStrategy, RetryConfig
-            from openrouter.utils.logger import NoOpLogger
-
-            _client = OpenRouter(
-                api_key=config.OPENROUTER_API_KEY,
-                server_url=config.OPENROUTER_BASE_URL,
-                timeout_ms=TIMEOUT_MS,
-                # The SDK sleeps a server's Retry-After as-is (3600 -> an hour): drop it so the
-                # backoff below always applies.
-                client=httpx.Client(
-                    follow_redirects=True, event_hooks={"response": [_drop_retry_after]}
-                ),
-                # SDK default retries 5XX for up to an hour. Bounded: 408/429/5XX and connection
-                # errors, backoff 0.5s..4s, no retry after 15s elapsed (a timed-out call is final).
-                retry_config=RetryConfig(
-                    "backoff", BackoffStrategy(500, 4000, 2, 15_000), True, ["408", "429", "5XX"]
-                ),
-                # OPENROUTER_DEBUG would log every prompt/reply body (PII) and set the root logger
-                # to DEBUG (httpx already redacts the key): never use its logger.
-                debug_logger=NoOpLogger(),
-            )
+            _client = _build_client()
             _client.chat  # noqa: B018 - load the lazy sub-SDK once, not racing in pool threads
         return _client
+
+
+def _build_client() -> OpenRouter:
+    if not config.OPENROUTER_API_KEY:
+        raise RuntimeError("OPENROUTER_API_KEY is not set (see .env.example)")
+    return OpenRouter(
+        api_key=config.OPENROUTER_API_KEY,
+        server_url=config.OPENROUTER_BASE_URL,
+        timeout_ms=TIMEOUT_MS,
+        # The SDK sleeps a server's Retry-After as-is (3600 -> an hour): drop it so the
+        # backoff below always applies.
+        client=httpx.Client(follow_redirects=True, event_hooks={"response": [_drop_retry_after]}),
+        # SDK default retries 5XX for up to an hour. Bounded: 408/429/5XX and connection
+        # errors, backoff 0.5s..4s, no retry after 15s elapsed (a timed-out call is final).
+        retry_config=RetryConfig(
+            "backoff", BackoffStrategy(500, 4000, 2, 15_000), True, ["408", "429", "5XX"]
+        ),
+        # OPENROUTER_DEBUG would log every prompt/reply body (PII) and set the root logger
+        # to DEBUG (httpx already redacts the key): never use its logger.
+        debug_logger=NoOpLogger(),
+    )
 
 
 def _drop_retry_after(response) -> None:
@@ -90,7 +94,7 @@ def chat(
     Raises BudgetExceeded before sending if the estimate is over TARGET_INPUT_TOKENS,
     or after the call if the provider reports prompt_tokens >= MAX_INPUT_TOKENS (input must stay
     under it). `model` overrides config.LLM_MODEL for this call (judge calls). Purposes in
-    _max_tokens() get a completion cap.
+    _COMPLETION_CAP get a completion cap.
     """
     estimate = estimate_tokens(messages, tools)
     if estimate > config.TARGET_INPUT_TOKENS:
@@ -102,7 +106,7 @@ def chat(
     kwargs = {"model": model, "messages": messages}
     if tools:
         kwargs["tools"] = tools
-    if cap := _max_tokens(purpose):
+    if cap := _COMPLETION_CAP.get(purpose):
         kwargs["max_tokens"] = cap
     try:
         resp = _send(kwargs)
@@ -119,14 +123,14 @@ def chat(
         prompt_tokens = estimate
     over = prompt_tokens >= config.MAX_INPUT_TOKENS
     _record(
-        purpose,
-        model,
-        thread_id,
-        estimate,
-        prompt_tokens,
-        getattr(usage, "completion_tokens", None),
-        usage_missing,
-        over,
+        purpose=purpose,
+        model=model,
+        thread_id=thread_id,
+        estimated_tokens=estimate,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=getattr(usage, "completion_tokens", None),
+        usage_missing=usage_missing,
+        over_limit=over,
     )
     if over:
         print(
@@ -141,25 +145,26 @@ def chat(
 
 
 def _send(kwargs: dict):
-    from openrouter import components, errors
-    from openrouter.utils import unmarshal_json
-
     try:
         return _get_client().chat.send(**kwargs)
     except errors.ResponseValidationError as e:
         if e.raw_response.status_code != 200:
             raise  # an error body that failed the SDK's error schema: never read it as a reply
-        # The SDK requires fields OpenRouter documents as optional (system_fingerprint; per choice
-        # finish_reason, index). Fill only those and parse once more; anything else still raises.
         try:
-            data = json.loads(e.body)
-            data.setdefault("system_fingerprint", None)
-            for i, choice in enumerate(data.get("choices") or []):
-                choice.setdefault("finish_reason", None)
-                choice.setdefault("index", i)
-            return unmarshal_json(json.dumps(data), components.ChatResult)
-        except Exception:
-            raise e from e.__cause__  # still invalid: the original error, as before
+            return utils.unmarshal_json(_fill_optional_fields(e.body), components.ChatResult)
+        except Exception:  # non-JSON, non-dict or still invalid body: surface the SDK's error
+            raise e from e.__cause__
+
+
+def _fill_optional_fields(body: str) -> str:
+    """The SDK requires fields OpenRouter documents as optional (system_fingerprint; per choice
+    finish_reason, index). Fill only those; anything else missing still fails the re-parse."""
+    data = json.loads(body)
+    data.setdefault("system_fingerprint", None)
+    for i, choice in enumerate(data.get("choices") or []):
+        choice.setdefault("finish_reason", None)
+        choice.setdefault("index", i)
+    return json.dumps(data)
 
 
 def _adapt(resp) -> None:
@@ -173,42 +178,38 @@ def _adapt(resp) -> None:
             msg.content = None
 
 
-def _max_tokens(purpose: str) -> int | None:
-    # Per purpose, so callers and test fakes of llm.chat keep their signature.
-    return {"doc_note": config.DOC_NOTE_MAX_TOKENS}.get(purpose)
-
-
 def _record(
-    purpose, model, thread_id, estimate, prompt_tokens, completion_tokens, usage_missing, over
+    *,
+    purpose,
+    model,
+    thread_id,
+    estimated_tokens,
+    prompt_tokens,
+    completion_tokens,
+    usage_missing,
+    over_limit,
 ) -> None:
-    # Metadata only: never message bodies, never the key.
+    # Metadata only: never message bodies, never the key. Explicit params so an extra key is a
+    # TypeError, not a new JSONL field. sqlite3 stores bool flags as 0/1; JSONL keeps true/false.
     row = {
         "ts": datetime.now(UTC).isoformat(timespec="milliseconds"),
         "purpose": purpose,
         "model": model,
         "thread_id": thread_id,
-        "estimated_tokens": estimate,
+        "estimated_tokens": estimated_tokens,
         "prompt_tokens": prompt_tokens,
         "completion_tokens": completion_tokens,
         "usage_missing": usage_missing,
-        "over_limit": over,
+        "over_limit": over_limit,
     }
     c = db.conn()
     with c:
         c.execute(
             "INSERT INTO llm_calls (ts, purpose, model, thread_id, estimated_tokens, prompt_tokens,"
-            " completion_tokens, usage_missing, over_limit) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                row["ts"],
-                purpose,
-                row["model"],
-                thread_id,
-                estimate,
-                prompt_tokens,
-                completion_tokens,
-                int(usage_missing),
-                int(over),
-            ),
+            " completion_tokens, usage_missing, over_limit) VALUES (:ts, :purpose, :model,"
+            " :thread_id, :estimated_tokens, :prompt_tokens, :completion_tokens, :usage_missing,"
+            " :over_limit)",
+            row,
         )
     config.CALL_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
     with open(config.CALL_LOG_PATH, "a") as f:

@@ -79,14 +79,14 @@ def _probability(text: str, thread_id: str | None) -> float:
     prompt_tokens = estimate if missing else prompt_tokens
     over = prompt_tokens >= config.MAX_INPUT_TOKENS
     llm._record(
-        "gate",
-        config.GATE_MODEL,
-        thread_id,
-        estimate,
-        prompt_tokens,
-        usage.get("output_tokens"),
-        missing,
-        over,
+        purpose="gate",
+        model=config.GATE_MODEL,
+        thread_id=thread_id,
+        estimated_tokens=estimate,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=usage.get("output_tokens"),
+        usage_missing=missing,
+        over_limit=over,
     )
     if over:
         raise llm.BudgetExceeded(f"provider reported {prompt_tokens} prompt tokens (gate)")

@@ -1,0 +1,2 @@
+# Security floors for `make lock` (uv -c). certifi: GHSA-6q48-6c7w-9gw2 / PYSEC-2026-4320.
+certifi>=2026.10.19
