@@ -3,7 +3,16 @@
     "path": "docs/Q3-plan.md",
     "approx_tokens": 29122,
     "facts": {
-      "launch_date": "2026-09-17"
+      "launch_date": "2026-09-17",
+      "distractor_dates": [
+        "2026-08-20",
+        "2026-08-27",
+        "2026-09-01",
+        "2026-09-03",
+        "2026-09-10",
+        "2026-09-24",
+        "2026-10-01"
+      ]
     }
   },
   "engineering-handbook": {

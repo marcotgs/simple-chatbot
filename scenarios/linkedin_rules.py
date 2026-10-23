@@ -1,4 +1,6 @@
-"""Independent LinkedIn post checker: the authority for S7 (the implementation under test is not trusted)."""
+"""Independent LinkedIn post checker: the authority for S7 (the implementation under test is not
+trusted)."""
+
 import re
 
 MAX_CHARS = 1300
@@ -7,9 +9,17 @@ _TAG = re.compile(r"(?<![\w&/#])#\w+")
 _TRAILING_TAGS = re.compile(r"(?:(?<![\w&/#])#\w+[ \t,|]*\n?[ \t]*)+\Z")
 _LINK = re.compile(
     r"https?://|\bwww\.|\[[^\]]*\]\([^)]*\)|"
-    r"\b[a-z0-9-]+\.(?:com|org|net|io|ai|co|dev|app|ly|gg|me|info|biz|link|page|site|xyz)\b", re.I)
-_CLOSER = re.compile(r"^(let me know|feel free|hope (this|that)|want me to|would you like|i can also|if you('d| would) like)", re.I)
-_PREAMBLE = re.compile(r"^(here('s| is)|sure|absolutely|of course|okay|ok|great|below)\b.*:\s*$|^.{0,80}:\s*$", re.I)
+    r"\b[a-z0-9-]+\.(?:com|org|net|io|ai|co|dev|app|ly|gg|me|info|biz|link|page|site|xyz)\b",
+    re.I,
+)
+_CLOSER = re.compile(
+    r"^(let me know|feel free|hope (this|that)|want me to|would you like|i can also"
+    r"|if you('d| would) like)",
+    re.I,
+)
+_PREAMBLE = re.compile(
+    r"^(here('s| is)|sure|absolutely|of course|okay|ok|great|below)\b.*:\s*$|^.{0,80}:\s*$", re.I
+)
 
 
 def check_post(text: str) -> list[str]:
@@ -24,7 +34,7 @@ def check_post(text: str) -> list[str]:
     if len(tags) > MAX_HASHTAGS:
         errors.append(f"too many hashtags: {len(tags)} > {MAX_HASHTAGS}")
     m = _TRAILING_TAGS.search(text)
-    body = text[:m.start()] if m else text
+    body = text[: m.start()] if m else text
     if _TAG.search(body):
         errors.append(f"hashtag not at the end: {_TAG.search(body).group(0)}")
     link = _LINK.search(text)

@@ -1,14 +1,33 @@
 """Deterministic assertion helpers for the scenario runner. Pure: no chatbot import, no LLM."""
+
 import re
 import sqlite3
+import unicodedata
 from datetime import date
 from pathlib import Path
 
 # ---- dates -------------------------------------------------------------------------------
 
-_MONTHS = {m: i for i, m in enumerate(
-    ["january", "february", "march", "april", "may", "june", "july", "august",
-     "september", "october", "november", "december"], start=1)}
+_MONTHS = {
+    m: i
+    for i, m in enumerate(
+        [
+            "january",
+            "february",
+            "march",
+            "april",
+            "may",
+            "june",
+            "july",
+            "august",
+            "september",
+            "october",
+            "november",
+            "december",
+        ],
+        start=1,
+    )
+}
 _MON = r"(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?"
 _ORD = r"(\d{1,2})(?:st|nd|rd|th)?"
 _DATE_RES = [
@@ -61,23 +80,57 @@ def mentions_date(text: str, expected: date) -> bool:
         return True
     mon = rf"{list(_MONTHS)[expected.month - 1][:3]}[a-z]*\.?"
     day = rf"0?{expected.day}(?:st|nd|rd|th)?"
-    return bool(re.search(rf"\b{mon}\s+{day}\b(?!\s*,?\s*\d{{4}})|\b{day}\s+(?:of\s+)?{mon}\b(?!\s*,?\s*\d{{4}})",
-                          text, re.I))
+    return bool(
+        re.search(
+            rf"\b{mon}\s+{day}\b(?!\s*,?\s*\d{{4}})|\b{day}\s+(?:of\s+)?{mon}\b(?!\s*,?\s*\d{{4}})",
+            text,
+            re.I,
+        )
+    )
 
 
 # ---- spelling ------------------------------------------------------------------------------
 
-_IZE = ["organ", "real", "recogn", "priorit", "final", "apolog", "summar", "optim", "custom", "emphas",
-        "minim", "maxim", "util", "special", "standard", "categor", "visual", "author", "critic", "central"]
+_IZE = [
+    "organ",
+    "real",
+    "recogn",
+    "priorit",
+    "final",
+    "apolog",
+    "summar",
+    "optim",
+    "custom",
+    "emphas",
+    "minim",
+    "maxim",
+    "util",
+    "special",
+    "standard",
+    "categor",
+    "visual",
+    "author",
+    "critic",
+    "central",
+]
 _IZE_SUFFIX = "(e|es|ed|ing|ation|ations|er|ers)"
 SPELLING_PAIRS = [  # (british regex, american regex), matched as whole words, case-insensitive
-    (r"colour\w*", r"color\w*"), (r"favour\w*", r"favor\w*"), (r"honour\w*", r"honor\w*"),
-    (r"behaviour\w*", r"behavior\w*"), (r"labour(s|ed|ing)?", r"labor(s|ed|ing)?"),
-    (r"neighbour\w*", r"neighbor\w*"), (r"humour\w*", r"humor\w*"),
-    (r"centre[sd]?", r"center(s|ed)?"), (r"theatre[s]?", r"theater[s]?"),
-    (r"analys(e|es|ed|ing)", r"analyz(e|es|ed|ing)"), (r"grey\w*", r"gray\w*"),
-    (r"travell(ed|ing|er|ers)", r"travel(ed|ing|er|ers)"), (r"cancell(ed|ing)", r"cancel(ed|ing)"),
-    (r"modell(ed|ing)", r"model(ed|ing)"), (r"defence[s]?", r"defense[s]?"), (r"catalogue[sd]?", r"catalog(s|ed)?"),
+    (r"colour\w*", r"color\w*"),
+    (r"favour\w*", r"favor\w*"),
+    (r"honour\w*", r"honor\w*"),
+    (r"behaviour\w*", r"behavior\w*"),
+    (r"labour(s|ed|ing)?", r"labor(s|ed|ing)?"),
+    (r"neighbour\w*", r"neighbor\w*"),
+    (r"humour\w*", r"humor\w*"),
+    (r"centre[sd]?", r"center(s|ed)?"),
+    (r"theatre[s]?", r"theater[s]?"),
+    (r"analys(e|es|ed|ing)", r"analyz(e|es|ed|ing)"),
+    (r"grey\w*", r"gray\w*"),
+    (r"travell(ed|ing|er|ers)", r"travel(ed|ing|er|ers)"),
+    (r"cancell(ed|ing)", r"cancel(ed|ing)"),
+    (r"modell(ed|ing)", r"model(ed|ing)"),
+    (r"defence[s]?", r"defense[s]?"),
+    (r"catalogue[sd]?", r"catalog(s|ed)?"),
     *[(rf"{s}is{_IZE_SUFFIX}", rf"{s}iz{_IZE_SUFFIX}") for s in _IZE],
 ]
 _BRIT = [re.compile(rf"\b{b}\b", re.I) for b, _ in SPELLING_PAIRS]
@@ -93,11 +146,40 @@ def spelling_counts(text: str) -> tuple[int, int, list[str]]:
 
 # ---- playful -------------------------------------------------------------------------------
 
-PLAYFUL_WORDS = ["woohoo", "woo-hoo", "yay", "hooray", "yippee", "whee", "buckle up", "drumroll", "drum roll",
-                 "ta-da", "tada", "high-five", "high five", "rockstar", "superstar", "sparkl", "giggle",
-                 "wild ride", "seatbelt", "oh boy", "ahoy", "zany", "pizzazz", "jazzed", "stoked",
-                 "fancy pants", "fun fact", "spoiler alert", ";)", ":)", ":d"]
-_EMOJI = re.compile("[\U0001F300-\U0001FAFF☀-➿\U0001F000-\U0001F2FF]")
+PLAYFUL_WORDS = [
+    "woohoo",
+    "woo-hoo",
+    "yay",
+    "hooray",
+    "yippee",
+    "whee",
+    "buckle up",
+    "drumroll",
+    "drum roll",
+    "ta-da",
+    "tada",
+    "high-five",
+    "high five",
+    "rockstar",
+    "superstar",
+    "sparkl",
+    "giggle",
+    "wild ride",
+    "seatbelt",
+    "oh boy",
+    "ahoy",
+    "zany",
+    "pizzazz",
+    "jazzed",
+    "stoked",
+    "fancy pants",
+    "fun fact",
+    "spoiler alert",
+    ";)",
+    ":)",
+    ":d",
+]
+_EMOJI = re.compile("[\U0001f300-\U0001faff☀-➿\U0001f000-\U0001f2ff]")
 MAX_EXCLAMATIONS = 1
 
 
@@ -113,13 +195,20 @@ def playful_signals(text: str) -> list[str]:
 
 # ---- leak scans ----------------------------------------------------------------------------
 
+
 def norm(s: str) -> str:
-    return re.sub(r"\s+", " ", s).strip().lower()
+    """Lowercase, punctuation and whitespace collapsed: '742, Evergreen-Terrace' == '742 evergreen
+    terrace'."""
+    return re.sub(r"[\W_]+", " ", s).strip().lower()
 
 
 def text_leaks(text: str, needles: list[str]) -> list[str]:
     t = norm(text or "")
     return [n for n in needles if norm(n) in t]
+
+
+def _strip_accents(w: str) -> str:
+    return "".join(ch for ch in unicodedata.normalize("NFKD", w) if not unicodedata.combining(ch))
 
 
 def scan_db(db_path: Path, needles: list[str]) -> list[str]:
@@ -134,10 +223,11 @@ def scan_db(db_path: Path, needles: list[str]) -> list[str]:
         for name, sql in tables:
             if sql and sql.upper().startswith("CREATE VIRTUAL TABLE"):
                 continue
-            cur = c.execute(f'SELECT * FROM "{name}"')  # no rowid: FTS shadow tables are WITHOUT ROWID
+            # no rowid: FTS shadow tables are WITHOUT ROWID
+            cur = c.execute(f'SELECT * FROM "{name}"')
             cols = [d[0] for d in cur.description]
             for row in cur:
-                for col, v in zip(cols, row):
+                for col, v in zip(cols, row, strict=True):
                     if isinstance(v, bytes):
                         v = v.decode("utf-8", "ignore")
                     if not isinstance(v, str):
@@ -145,11 +235,16 @@ def scan_db(db_path: Path, needles: list[str]) -> list[str]:
                     v = norm(v)
                     hits += [f"{name}.{col}[{row[0]}]:{n}" for n in low_needles if n in v]
         terms = {w for n in low_needles for w in re.findall(r"\w+", n)}
+        terms |= {
+            _strip_accents(w) for w in terms
+        }  # unicode61 removes diacritics: 'émile' is indexed as 'emile'
         for name, sql in tables:
             if sql and re.search(r"USING\s+fts5\b", sql, re.I):
                 vocab = f"_scan_vocab_{name}"
                 # temp schema works on a read-only db; the vocab table is gone when we close.
-                c.execute(f'CREATE VIRTUAL TABLE temp."{vocab}" USING fts5vocab(main, "{name}", row)')
+                c.execute(
+                    f'CREATE VIRTUAL TABLE temp."{vocab}" USING fts5vocab(main, "{name}", row)'
+                )
                 for (term,) in c.execute(f'SELECT term FROM temp."{vocab}"'):
                     if term in terms and not term.isdigit():
                         hits.append(f"{name}(fts-vocab):{term}")
@@ -159,14 +254,23 @@ def scan_db(db_path: Path, needles: list[str]) -> list[str]:
 
 
 def scan_files(paths: list[Path], needles: list[str]) -> list[str]:
-    """Raw byte search (case-insensitive) in each existing file, e.g. the .db, -wal, -shm, logs."""
+    """Raw byte search (case-insensitive, incl. non-ASCII case forms) in each existing file, e.g.
+    the .db, -wal, -shm, logs."""
     hits = []
     for p in paths:
         p = Path(p)
         if not p.is_file():
             continue
-        data = p.read_bytes().lower()
-        hits += [f"{p.name}:{n}" for n in needles if n.lower().encode() in data]
+        raw = p.read_bytes()
+        low = (
+            raw.lower()
+        )  # bytes.lower() folds ASCII only, so also try each case form of non-ASCII needles
+        hits += [
+            f"{p.name}:{n}"
+            for n in needles
+            if any(f.encode() in raw for f in {n, n.lower(), n.upper()})
+            or n.lower().encode() in low
+        ]
     return hits
 
 

@@ -16,8 +16,12 @@ Exit code 1 if any scenario fails. Conversation progress goes to stderr.
   set before `chatbot` is imported. The repo's `data/` and `logs/` are never touched.
 - Live steps call `core.send(user, thread, text)` with one user `scenario-user`, thread `slack-dm`
   for the Slack DM and uuid threads for web sessions.
-- History (S2, S6, S7) and the 100 filler turns of S3 go through `core.ingest_turn`, the same storage
-  and memory path as live messages; the canned assistant replies skip reply generation.
+- History and the 100 filler turns of S3 go through `core.ingest_turn`, the same storage
+  and memory path as live messages (one fact-extraction call per user turn); the canned assistant
+  replies skip reply generation.
+- The 500-turn history is loaded ONCE per run into a snapshot dir (`SNAPSHOT` line, with load calls by
+  purpose); S2, S6, S7 and `--dry` each start from a copy of it (DB, WAL, call log, `forget.key`).
+  Each scenario's budget line counts only its own calls, not the copied load calls.
 - `scripts/gen_history.py` writes `scenarios/data/history_500.json` + `expected.json` (seeded, no network).
   The runner regenerates them on every run. Planted: address turn 8, partner turn 12, cat turn 20,
   restaurant turn 22. Manager and spelling facts only come from live steps.
@@ -31,9 +35,9 @@ Exit code 1 if any scenario fails. Conversation progress goes to stderr.
 
 ## Env and cost
 
-Needs `OPENROUTER_API_KEY` (from `.env` or the environment); `LLM_MODEL`, `MAX_INPUT_TOKENS`,
-`FACT_EXTRACT_BATCH` are honoured. Live runs spend real OpenRouter credit.
-Rough estimate (UNVERIFIED until the first full run): 20 `send` calls, each 1-6 model calls plus memory
-extraction; 3 history loads of 500 turns (about 25 extraction calls each at `FACT_EXTRACT_BATCH=20`,
-plus summary rollups); the Q3-plan map-reduce. Around 150-300 calls, all under 8k input tokens:
-below 1 USD on `openai/gpt-4o-mini`. The per-scenario `calls=` column shows the real count.
+Needs `OPENROUTER_API_KEY` (from `.env` or the environment); `LLM_MODEL` (default `openai/gpt-4.1-mini`)
+and `MAX_INPUT_TOKENS` are honoured. Live runs spend real OpenRouter credit.
+Rough estimate (UNVERIFIED until the first full run): one history load per run = 500 extract calls
+(one per user turn) plus summary rollups, small prompts; S3's 100 filler turns add 100 more; 20 `send`
+calls, each 1-6 model calls plus one extract; the Q3-plan map-reduce. Around 700-800 calls, all under
+8k input tokens, around 1 USD on `openai/gpt-4.1-mini`. The `calls=` column shows the real count.
