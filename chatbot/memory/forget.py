@@ -295,7 +295,9 @@ def _resolve(user_id: str, subject: str, thread_id: str | None) -> tuple[set[int
         log("forget_resolve", type(e).__name__)
     words = content_words(subject)
     if not ids and not values:
-        ids = {r["id"] for r in rows if any(w in r["subject"].split("_") for w in words)}
+        # Deletion is irreversible: only ONE key holding every subject word, else nothing.
+        hit = {r["subject"] for r in rows if words and set(words) <= set(_words(r["subject"]))}
+        ids = {r["id"] for r in rows if r["subject"] in hit} if len(hit) == 1 else set()
     # Always also look in messages: the value may be phrased differently there than in the fact.
     values |= _find_in_messages(user_id, subject, terms + words, thread_id)
     literal = set()

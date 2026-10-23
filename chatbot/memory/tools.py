@@ -6,8 +6,7 @@ from chatbot import db, uploads
 from chatbot.memory import doc_notes, facts, forget, retrieval
 
 # forget is irreversible and model-triggered, so it runs only when the text the user typed in the
-# current message asks for it in words AND names the subject (its content words, in order and
-# adjacent);
+# current message asks for it in words AND names the subject in the same sentence (see _names);
 # a correction ("it is X, not Y") goes through extraction, keeping the old value.
 # ponytail: English keyword check; extend the verb list if other languages are needed.
 _FORGET_ASK = re.compile(r"\b(forget|delete|erase|remove|wipe|purge)\b", re.I)
@@ -23,6 +22,23 @@ _NOT_FORGET = re.compile(
     + r"\b)*",
     re.I,
 )
+# A forget ask counts only inside its own sentence ("Forget my address. My partner is Bob.").
+_CLAUSE = re.compile(r"[.?!;]+(?:\s+|$)|\n")
+_FILLER = {"my", "the", "a", "an", "please"}
+
+
+def _names(clause: str, subject: str, keys: set[tuple[str, ...]]) -> bool:
+    """The subject's words the user typed form one run of the clause ("home page address" does
+    not name "home address", R5-SEC-S1), and words the model added fit, with the typed ones,
+    inside ONE stored fact key ("my address" names "home address" when home_address is stored;
+    "address phone partner" or "address and everything else" name nothing)."""
+    said = [w for w in forget._words(clause) if w not in _FILLER]
+    want = [w for w in forget._words(subject) if w not in _FILLER]
+    typed = [w for w in want if w in said]
+    run = any(said[i : i + len(typed)] == typed for i in range(len(said) - len(typed) + 1))
+    if not forget.content_words(" ".join(typed)) or not run:
+        return False
+    return set(typed) == set(want) or any(set(want) <= set(k) for k in keys)
 
 
 def _search_history(user_id, thread_id, query, limit=5):
@@ -30,7 +46,7 @@ def _search_history(user_id, thread_id, query, limit=5):
 
 
 def _search_doc_notes(user_id, thread_id, query, doc_id=None):
-    return doc_notes.search_doc_notes(user_id, query, doc_id)
+    return doc_notes.search_doc_notes(user_id, thread_id, query, doc_id)
 
 
 def _summarize_doc(user_id, thread_id, doc_id):
@@ -60,14 +76,9 @@ def _forget(user_id, thread_id, subject):
         .fetchone()
     )
     typed = row["content"].split(uploads.NOTE_PREFIX, 1)[0] if row else ""
-    said = forget.content_words(typed)
-    want = forget.content_words(subject)
-    # The subject's content words as one run of the typed ones ("home page address" does not
-    # name "home address", R5-SEC-S1).
-    named = bool(want) and any(
-        said[i : i + len(want)] == want for i in range(len(said) - len(want) + 1)
-    )
-    if not named or not _FORGET_ASK.search(_NOT_FORGET.sub("", typed)):
+    keys = {forget._words(f["key"]) for f in facts.get_active_facts(user_id, thread_id)}
+    asks = [s for s in _CLAUSE.split(typed) if _FORGET_ASK.search(_NOT_FORGET.sub("", s))]
+    if not any(_names(s, subject, keys) for s in asks):
         return (
             "error: not run. forget only runs when the user's current message explicitly asks to "
             "forget, delete or erase something and names it; use the user's own words as the "
@@ -101,7 +112,7 @@ TOOLS = [
         _schema(
             "search_doc_notes",
             "Search saved notes and key facts (dates, owners, numbers) of documents summarized "
-            "earlier.",
+            "earlier in this chat.",
             {"query": _STR, "doc_id": {**_STR, "description": "optional document id"}},
             ["query"],
         ),
